@@ -97,15 +97,14 @@ function SvgPathNode({
 
   // In direct selection mode, only hit-test the stroke so enclosed areas don't occlude inner paths
   // (Konva fills the hit canvas for ALL closed paths, even those with fill:none)
+  // We intercept fillShape (not fillStrokeShape) so strokeShape still runs through
+  // its normal code path inside fillStrokeShape — preserving exact transform/coordinate handling
   const strokeOnlyHitFunc = activeInteractionMode === 'direct'
     ? (context: any, shape: any) => {
-        // Run _sceneFunc to build the path, but intercept fillStrokeShape so fill
-        // doesn't register on the hit canvas — then stroke-only for hit detection
-        const orig = context.fillStrokeShape
-        context.fillStrokeShape = () => {}
+        const origFill = context.fillShape
+        context.fillShape = () => {}
         shape._sceneFunc(context)
-        context.fillStrokeShape = orig
-        context.strokeShape(shape)
+        context.fillShape = origFill
       }
     : undefined
 
@@ -325,11 +324,10 @@ export function ShapeRenderer({
 
     const rectStrokeOnlyHitFunc = activeInteractionMode === 'direct'
       ? (context: any, shape: any) => {
-          const orig = context.fillStrokeShape
-          context.fillStrokeShape = () => {}
+          const origFill = context.fillShape
+          context.fillShape = () => {}
           shape._sceneFunc(context)
-          context.fillStrokeShape = orig
-          context.strokeShape(shape)
+          context.fillShape = origFill
         }
       : undefined
 
@@ -380,11 +378,10 @@ export function ShapeRenderer({
 
     const circleStrokeOnlyHitFunc = activeInteractionMode === 'direct'
       ? (context: any, shape: any) => {
-          const orig = context.fillStrokeShape
-          context.fillStrokeShape = () => {}
+          const origFill = context.fillShape
+          context.fillShape = () => {}
           shape._sceneFunc(context)
-          context.fillStrokeShape = orig
-          context.strokeShape(shape)
+          context.fillShape = origFill
         }
       : undefined
 
@@ -445,11 +442,10 @@ export function ShapeRenderer({
 
     const lineStrokeOnlyHitFunc = activeInteractionMode === 'direct' && node.closed
       ? (context: any, shape: any) => {
-          const orig = context.fillStrokeShape
-          context.fillStrokeShape = () => {}
+          const origFill = context.fillShape
+          context.fillShape = () => {}
           shape._sceneFunc(context)
-          context.fillStrokeShape = orig
-          context.strokeShape(shape)
+          context.fillShape = origFill
         }
       : undefined
 
