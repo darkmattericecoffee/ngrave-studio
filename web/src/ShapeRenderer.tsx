@@ -95,10 +95,16 @@ function SvgPathNode({
     if (!visualProps.strokeWidth) visualProps.strokeWidth = 1.5
   }
 
-  // In direct selection mode, only hit-test the stroke so fills don't occlude inner paths
-  const strokeOnlyHitFunc = activeInteractionMode === 'direct' && node.fill
+  // In direct selection mode, only hit-test the stroke so enclosed areas don't occlude inner paths
+  // (Konva fills the hit canvas for ALL closed paths, even those with fill:none)
+  const strokeOnlyHitFunc = activeInteractionMode === 'direct'
     ? (context: any, shape: any) => {
+        // Run _sceneFunc to build the path, but intercept fillStrokeShape so fill
+        // doesn't register on the hit canvas — then stroke-only for hit detection
+        const orig = context.fillStrokeShape
+        context.fillStrokeShape = () => {}
         shape._sceneFunc(context)
+        context.fillStrokeShape = orig
         context.strokeShape(shape)
       }
     : undefined
@@ -317,13 +323,12 @@ export function ShapeRenderer({
       if (!visualProps.strokeWidth) visualProps.strokeWidth = 1.5
     }
 
-    const rectStrokeOnlyHitFunc = activeInteractionMode === 'direct' && node.fill
+    const rectStrokeOnlyHitFunc = activeInteractionMode === 'direct'
       ? (context: any, shape: any) => {
-          const w = shape.width()
-          const h = shape.height()
-          context.beginPath()
-          context.rect(0, 0, w, h)
-          context.closePath()
+          const orig = context.fillStrokeShape
+          context.fillStrokeShape = () => {}
+          shape._sceneFunc(context)
+          context.fillStrokeShape = orig
           context.strokeShape(shape)
         }
       : undefined
@@ -345,7 +350,7 @@ export function ShapeRenderer({
         opacity={opacity}
         listening={listening}
         hitFunc={rectStrokeOnlyHitFunc}
-        hitStrokeWidth={activeInteractionMode === 'direct' && node.fill ? 12 : undefined}
+        hitStrokeWidth={activeInteractionMode === 'direct' ? 12 : undefined}
         {...visualProps}
         onMouseDown={onPointerDown}
         onTouchStart={onPointerDown}
@@ -373,12 +378,12 @@ export function ShapeRenderer({
       if (!visualProps.strokeWidth) visualProps.strokeWidth = 1.5
     }
 
-    const circleStrokeOnlyHitFunc = activeInteractionMode === 'direct' && node.fill
+    const circleStrokeOnlyHitFunc = activeInteractionMode === 'direct'
       ? (context: any, shape: any) => {
-          const r = shape.radius()
-          context.beginPath()
-          context.arc(0, 0, r, 0, Math.PI * 2, false)
-          context.closePath()
+          const orig = context.fillStrokeShape
+          context.fillStrokeShape = () => {}
+          shape._sceneFunc(context)
+          context.fillStrokeShape = orig
           context.strokeShape(shape)
         }
       : undefined
@@ -398,7 +403,7 @@ export function ShapeRenderer({
         opacity={opacity}
         listening={listening}
         hitFunc={circleStrokeOnlyHitFunc}
-        hitStrokeWidth={activeInteractionMode === 'direct' && node.fill ? 12 : undefined}
+        hitStrokeWidth={activeInteractionMode === 'direct' ? 12 : undefined}
         {...visualProps}
         onMouseDown={onPointerDown}
         onTouchStart={onPointerDown}
@@ -438,17 +443,12 @@ export function ShapeRenderer({
       if (!visualProps.strokeWidth) visualProps.strokeWidth = 1.5
     }
 
-    const lineStrokeOnlyHitFunc = activeInteractionMode === 'direct' && node.closed && node.fill
+    const lineStrokeOnlyHitFunc = activeInteractionMode === 'direct' && node.closed
       ? (context: any, shape: any) => {
-          const points = shape.points()
-          const length = points.length
-          if (!length) return
-          context.beginPath()
-          context.moveTo(points[0], points[1])
-          for (let n = 2; n < length; n += 2) {
-            context.lineTo(points[n], points[n + 1])
-          }
-          if (shape.closed()) context.closePath()
+          const orig = context.fillStrokeShape
+          context.fillStrokeShape = () => {}
+          shape._sceneFunc(context)
+          context.fillStrokeShape = orig
           context.strokeShape(shape)
         }
       : undefined

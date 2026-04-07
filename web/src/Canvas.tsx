@@ -1010,9 +1010,6 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     directSelectionModifierActive,
   )
 
-  const hoverRect = hoveredNodeId
-    ? getNodeScreenRect(nodeRefs.current.get(hoveredNodeId) ?? null)
-    : null
 
   const selectionBoundingRect = (() => {
     if (selectedIds.length === 0 || selectedStage) return null
@@ -1354,17 +1351,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
         </Layer>
 
         <Layer ref={guideLayerRef} listening={false}>
-          {hoverRect ? (
-            <Rect
-              x={hoverRect.x}
-              y={hoverRect.y}
-              width={hoverRect.width}
-              height={hoverRect.height}
-              stroke="#0d99ff"
-              strokeWidth={1}
-              listening={false}
-            />
-          ) : null}
+          {/* Path outline overlay (in the layer above) handles hover visualization */}
           {marqueeHighlights.map(({ id, rect }) => (
             <Rect
               key={id}
