@@ -48,6 +48,8 @@ export interface EditorStore {
     pendingImport: PendingSvgImport | null
     importStatus: ImportStatus | null
   }
+  hoveredId: string | null
+  setHoveredId: (id: string | null) => void
   setInteractionMode: (mode: InteractionMode) => void
   setDirectSelectionModifierActive: (active: boolean) => void
   setFocusGroup: (groupId: string | null) => void
@@ -171,6 +173,8 @@ const initialViewport: ViewportState = {
 }
 
 export const useEditorStore = create<EditorStore>((set, get) => ({
+  // @ts-expect-error - temporary debug helper
+  ...(typeof window !== 'undefined' && ((window as any).__STORE__ = { get, set }) && {}),
   nodesById: initialNodes,
   rootIds: initialRootIds,
   selectedIds: [],
@@ -213,6 +217,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     pendingImport: null,
     importStatus: null,
   },
+  hoveredId: null,
+  setHoveredId: (id) => set({ hoveredId: id }),
   setInteractionMode: (mode) => {
     set({ interactionMode: mode })
   },
@@ -717,7 +723,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
 
     setProgress(10)
     const toolRadius = result.preview_snapshot.tool_diameter / 2
-    const rawGroups = groupSegments(program.segments, toolRadius)
+    const toolShape = machiningSettings.toolShape
+    const rawGroups = groupSegments(program.segments, toolRadius, toolShape)
 
     // Compute sweep shapes incrementally, yielding to the event loop for UI updates
     const toolpaths = []

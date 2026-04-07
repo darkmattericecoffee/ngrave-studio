@@ -1,6 +1,7 @@
 /* eslint-disable react-refresh/only-export-components */
 import type { ComponentType, SVGProps } from 'react'
 
+import { LocationArrow, MinusShape, MinusShapeFill } from '@gravity-ui/icons'
 import ArrowChevronDownIcon from '@gravity-ui/icons/esm/ArrowChevronDown.js'
 import ArrowChevronRightIcon from '@gravity-ui/icons/esm/ArrowChevronRight.js'
 import ArrowRotateLeftIcon from '@gravity-ui/icons/esm/ArrowRotateLeft.js'
@@ -12,7 +13,6 @@ import EyeSlashIcon from '@gravity-ui/icons/esm/EyeSlash.js'
 import FileArrowDownIcon from '@gravity-ui/icons/esm/FileArrowDown.js'
 import FileArrowUpIcon from '@gravity-ui/icons/esm/FileArrowUp.js'
 import HandIcon from '@gravity-ui/icons/esm/Hand.js'
-import HandPointUpIcon from '@gravity-ui/icons/esm/HandPointUp.js'
 import LayersIcon from '@gravity-ui/icons/esm/Layers.js'
 import LockIcon from '@gravity-ui/icons/esm/Lock.js'
 import LockOpenIcon from '@gravity-ui/icons/esm/LockOpen.js'
@@ -53,7 +53,7 @@ export const Icons = {
   undo: ArrowRotateLeftIcon,
   redo: ArrowRotateRightIcon,
   close: CircleXmarkIcon,
-  cursor: HandPointUpIcon,
+  cursor: LocationArrow,
   engravePreview: EngravePreviewIcon,
   export: ArrowUpFromSquareIcon,
   eye: EyeIcon,
@@ -66,6 +66,8 @@ export const Icons = {
   lock: LockIcon,
   lockOpen: LockOpenIcon,
   minus: MinusIcon,
+  minusShape: MinusShape,
+  minusShapeFill: MinusShapeFill,
   picture: PictureIcon,
   plus: PlusIcon,
 } satisfies Record<string, AppIconComponent>

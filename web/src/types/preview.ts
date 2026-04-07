@@ -2,6 +2,7 @@ import type { Shape } from 'three'
 import type { ParsedProgram, ParsedSegment } from '@svg2gcode/bridge/viewer'
 import type { GenerateJobResponse } from '@svg2gcode/bridge'
 import type { MaterialPreset } from '../lib/materialPresets'
+import type { RouterBitShape } from './editor'
 
 export type CameraType = 'perspective' | 'orthographic'
 export type ViewMode = 'design' | 'preview2d' | 'preview3d'
@@ -19,6 +20,7 @@ export interface ToolpathGroup {
   radius: number
   closed: boolean
   slotShapes: Shape[]
+  toolShape: RouterBitShape
   /** Source segments from bridge parser */
   segments: ParsedSegment[]
 }

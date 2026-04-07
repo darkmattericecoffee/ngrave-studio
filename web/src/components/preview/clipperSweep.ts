@@ -267,6 +267,34 @@ export function createTrueCncSweepShape(
   return clipperPathsToShapes(solution)
 }
 
+// ── Polygon inset (for V-groove bit profile) ──
+
+/**
+ * Inset (shrink) shapes by a given distance using ClipperOffset.
+ * Returns empty array when shapes collapse to nothing.
+ */
+export function insetShapes(
+  shapes: THREE.Shape[],
+  insetDistance: number,
+  divisions = 48,
+): THREE.Shape[] {
+  if (shapes.length === 0 || insetDistance <= 0) return shapes
+
+  const allPaths: ClipperPath[] = shapes.flatMap((s) => shapeToClipperPaths(s, divisions))
+
+  const offset = new ClipperLib.ClipperOffset()
+  for (const path of allPaths) {
+    offset.AddPath(path, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon)
+  }
+
+  const solution = new ClipperLib.Paths()
+  offset.Execute(solution, -insetDistance * CLIPPER_SCALE)
+  ClipperLib.Clipper.CleanPolygons(solution, CLIPPER_SCALE * 0.001)
+
+  if (solution.length === 0) return []
+  return clipperPathsToShapes(solution)
+}
+
 // ── Boolean operations on THREE.Shape arrays ──
 
 export function unionShapes(shapes: THREE.Shape[], divisions = 48): THREE.Shape[] {

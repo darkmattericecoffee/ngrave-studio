@@ -1,6 +1,15 @@
 import type { ParsedSegment } from '@svg2gcode/bridge/viewer'
 import type { ToolpathGroup, StockBounds } from '../../types/preview'
+import type { RouterBitShape } from '../../types/editor'
 import { createTrueCncSweepShape } from './clipperSweep'
+
+interface RawGroup {
+  pathPoints: { x: number; y: number }[]
+  depth: number
+  segments: ParsedSegment[]
+  radius: number
+  toolShape: RouterBitShape
+}
 
 /**
  * Group consecutive cut segments into continuous toolpath groups,
@@ -9,8 +18,9 @@ import { createTrueCncSweepShape } from './clipperSweep'
 export function groupSegments(
   segments: ParsedSegment[],
   toolRadius: number,
-): { pathPoints: { x: number; y: number }[]; depth: number; segments: ParsedSegment[]; radius: number }[] {
-  const groups: { pathPoints: { x: number; y: number }[]; depth: number; segments: ParsedSegment[]; radius: number }[] = []
+  toolShape: RouterBitShape = 'Flat',
+): RawGroup[] {
+  const groups: RawGroup[] = []
   let currentPoints: { x: number; y: number }[] = []
   let currentSegments: ParsedSegment[] = []
   let currentDepth = 0
@@ -27,6 +37,7 @@ export function groupSegments(
       depth: Math.abs(currentDepth),
       segments: currentSegments,
       radius: toolRadius,
+      toolShape,
     })
 
     currentPoints = []
@@ -53,9 +64,7 @@ export function groupSegments(
 /**
  * Compute sweep shapes for a single toolpath group.
  */
-export function computeGroupSweep(
-  group: { pathPoints: { x: number; y: number }[]; depth: number; segments: ParsedSegment[]; radius: number },
-): ToolpathGroup {
+export function computeGroupSweep(group: RawGroup): ToolpathGroup {
   const slotShapes = createTrueCncSweepShape(group.pathPoints, group.radius, false)
   return {
     pathPoints: group.pathPoints,
@@ -63,6 +72,7 @@ export function computeGroupSweep(
     radius: group.radius,
     closed: false,
     slotShapes,
+    toolShape: group.toolShape,
     segments: group.segments,
   }
 }

@@ -47,27 +47,31 @@ const MIN_SCALE = 0.25
 const MAX_SCALE = 4
 const WHEEL_SCALE_BY = 1.02
 
-function renderOutlineNode(nodeId: string, nodesById: Record<string, CanvasNode>): React.ReactElement | null {
+type NodeLiveTransform = { x: number; y: number; rotation: number; scaleX: number; scaleY: number }
+
+function getEffectiveTransform(node: CanvasNode, live: Map<string, NodeLiveTransform>): NodeLiveTransform {
+  return live.get(node.id) ?? { x: node.x, y: node.y, rotation: node.rotation ?? 0, scaleX: node.scaleX ?? 1, scaleY: node.scaleY ?? 1 }
+}
+
+function renderOutlineNode(
+  nodeId: string,
+  nodesById: Record<string, CanvasNode>,
+  live: Map<string, NodeLiveTransform>,
+): React.ReactElement | null {
   const node = nodesById[nodeId]
   if (!node || !node.visible) return null
-  const sharedTransform = {
-    x: node.x,
-    y: node.y,
-    rotation: node.rotation ?? 0,
-    scaleX: node.scaleX ?? 1,
-    scaleY: node.scaleY ?? 1,
-  }
+  const t = getEffectiveTransform(node, live)
   if (node.type === 'group') {
     const g = node as GroupNode
     return (
-      <Group key={nodeId} {...sharedTransform}>
-        {g.childIds.map((childId) => renderOutlineNode(childId, nodesById))}
+      <Group key={nodeId} {...t}>
+        {g.childIds.map((childId) => renderOutlineNode(childId, nodesById, live))}
       </Group>
     )
   }
   const base = {
     key: nodeId,
-    ...sharedTransform,
+    ...t,
     stroke: '#0d99ff',
     strokeWidth: 1,
     strokeScaleEnabled: false,
@@ -92,8 +96,8 @@ function renderOutlineNode(nodeId: string, nodesById: Record<string, CanvasNode>
 function renderOutlineNodeWithAncestors(
   targetId: string,
   nodesById: Record<string, CanvasNode>,
+  live: Map<string, NodeLiveTransform>,
 ): React.ReactElement | null {
-  // Build the chain from the artboard-level root down to the target node.
   const chain: string[] = []
   let currentId: string | undefined = targetId
   while (currentId) {
@@ -107,10 +111,9 @@ function renderOutlineNodeWithAncestors(
     const [id, ...rest] = remaining
     const node = nodesById[id]
     if (!node || !node.visible) return null
-    const t = { x: node.x, y: node.y, rotation: node.rotation ?? 0, scaleX: node.scaleX ?? 1, scaleY: node.scaleY ?? 1 }
+    const t = getEffectiveTransform(node, live)
     if (rest.length === 0) {
-      // Reached the target — render it (and all its children if it's a group)
-      return renderOutlineNode(id, nodesById)
+      return renderOutlineNode(id, nodesById, live)
     }
     return <Group key={id} {...t}>{renderChain(rest)}</Group>
   }
@@ -260,6 +263,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const [isZoomEditing, setIsZoomEditing] = useState(false)
   const [zoomDraft, setZoomDraft] = useState('')
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const [transformTick, setTransformTick] = useState(0)
   const zoomInputRef = useRef<HTMLInputElement | null>(null)
   const presetDef = MATERIAL_PRESETS.find((p) => p.id === materialPreset) ?? MATERIAL_PRESETS[0]
   const woodTexture = useImageAsset(presetDef.textureSrc)
@@ -910,6 +914,8 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   }
 
   const onTransformEnd = () => {
+    setTransformTick(0)
+
     if (selectedStage && allowStageSelection) {
       const artboardTarget = artboardTargetRef.current
       if (artboardTarget) {
@@ -1026,7 +1032,26 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     return { x: minX, y: minY, width: maxX - minX, height: maxY - minY }
   })()
 
-  const outlineSourceIds = [...new Set([...selectedIds, ...(hoveredNodeId ? [hoveredNodeId] : [])])]
+  const panelHoveredId = useEditorStore((s) => s.hoveredId)
+  const outlineSourceIds = [...new Set([...selectedIds, ...(hoveredNodeId ? [hoveredNodeId] : []), ...(panelHoveredId ? [panelHoveredId] : [])])]
+
+  // During an active transform, read current x/y/rotation/scale directly from
+  // Konva node refs so the outline tracks the handles in real-time.
+  const liveTransforms = new Map<string, NodeLiveTransform>()
+  if (transformTick > 0) {
+    for (const id of selectedIds) {
+      const kn = nodeRefs.current.get(id)
+      if (kn) {
+        liveTransforms.set(id, {
+          x: kn.x(),
+          y: kn.y(),
+          rotation: kn.rotation(),
+          scaleX: kn.scaleX(),
+          scaleY: kn.scaleY(),
+        })
+      }
+    }
+  }
 
   const cursor = isPanning || panToolActive ? (isPanning ? 'grabbing' : 'grab') : isSpacePressed ? 'grab' : 'default'
 
@@ -1067,9 +1092,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
             type="button"
             className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showOutlines ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
             onClick={() => setShowOutlines((v) => !v)}
-            title="Toggle CNC outlines"
+            title="Depth Lines - show colored depth lines"
           >
-            <AppIcon icon={showOutlines ? Icons.eye : Icons.eyeOff} className="h-5 w-5" />
+            <AppIcon icon={showOutlines ? Icons.minusShapeFill : Icons.minusShape} className="h-5 w-5" />
           </button>
 
           {/* Engrave preview toggle */}
@@ -1339,6 +1364,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
               }
             }}
             onTransformStart={onTransformStart}
+            onTransform={() => setTransformTick((t) => t + 1)}
             onTransformEnd={onTransformEnd}
           />
         </Layer>
@@ -1346,7 +1372,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
         {/* Illustrator-style thin path outline overlay — document space */}
         <Layer x={viewport.x} y={viewport.y} scaleX={viewport.scale} scaleY={viewport.scale} listening={false}>
           <Group x={artboardRect.x} y={artboardRect.y}>
-            {outlineSourceIds.map((id) => renderOutlineNodeWithAncestors(id, nodesById))}
+            {outlineSourceIds.map((id) => renderOutlineNodeWithAncestors(id, nodesById, liveTransforms))}
           </Group>
         </Layer>
 

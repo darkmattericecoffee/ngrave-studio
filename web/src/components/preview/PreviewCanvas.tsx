@@ -24,6 +24,7 @@ export function PreviewCanvas() {
   const showRapidMoves = useEditorStore((s) => s.preview.showRapidMoves)
   const showSvgOverlay = useEditorStore((s) => s.preview.showSvgOverlay)
   const materialPreset = useEditorStore((s) => s.preview.materialPreset)
+  const toolShape = useEditorStore((s) => s.machiningSettings.toolShape)
 
   const [stockTexture, setStockTexture] = useState<THREE.Texture | null>(null)
 
@@ -105,11 +106,11 @@ export function PreviewCanvas() {
     )
     state.stockGroup.add(stockMesh)
 
-    const sweepMesh = createMergedSweepMeshes(toolpaths)
+    const sweepMesh = createMergedSweepMeshes(toolpaths, toolShape)
     state.sweepGroup.add(sweepMesh)
 
     requestRender()
-  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, stockTexture, requestRender])
+  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, stockTexture, toolShape, requestRender])
 
   // Auto-fit camera to toolpath bounding box when GCode is generated
   useEffect(() => {

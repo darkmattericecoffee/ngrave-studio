@@ -610,10 +610,7 @@ fn append_cut_move<'input>(program: &mut Vec<Token<'input>>, point: Point<f64>, 
 }
 
 fn validate_engraving_config(engraving: &EngravingConfig) -> Result<(), String> {
-    if engraving.tool_shape != crate::ToolShape::Flat {
-        return Err("Tool shape is not yet supported for engraving CAM; select Flat.".into());
-    }
-    if engraving.target_depth <= 0.0 {
+if engraving.target_depth <= 0.0 {
         return Err("Target depth must be greater than 0.".into());
     }
     if engraving.max_stepdown <= 0.0 {

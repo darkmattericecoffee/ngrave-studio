@@ -1,26 +1,14 @@
 import { useMemo, useState } from 'react'
-import { Geo } from '@gravity-ui/icons'
-import { Button, Slider, Tabs } from '@heroui/react'
-import GeoFillIcon from '@gravity-ui/icons/svgs/geo-fill.svg'
+import { Button, Tabs } from '@heroui/react'
 
-import { isOpenPathNode, normalizeEngraveType } from '../lib/cncVisuals'
-import { isGroupNode } from '../lib/editorTree'
 import { getNodeSize } from '../lib/nodeDimensions'
 import { useEditorStore } from '../store'
-import type { CanvasNode, CncMetadata, EngraveType } from '../types/editor'
+import type { CanvasNode } from '../types/editor'
 import type { MaterialPreset } from '../lib/materialPresets'
 import { MaterialTabContent, PreviewTabContent } from './MaterialTabContent'
+import { CutDepthEditor } from './CutDepthEditor'
 
 type InspectorTab = 'design' | 'material'
-type NormalizedCutDepthFill = 'contour' | 'pocket'
-
-const ENGRAVE_TYPES: EngraveType[] = ['contour', 'pocket']
-const ENGRAVE_LABEL: Record<EngraveType, string> = {
-  contour: 'Contour',
-  outline: 'Outline',
-  pocket: 'Pocket',
-  raster: 'Raster',
-}
 
 interface StudioInspectorProps {
   activeTab: InspectorTab
@@ -36,10 +24,7 @@ export function StudioInspector({ activeTab, onTabChange, materialPreset, onMate
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-4">
-        <div className="h-9 w-9 rounded-full bg-primary/30" />
-        <Button size="sm">Share</Button>
-      </div>
+      <div className="px-4 py-4" />
 
       {/* Tabs */}
       <div className="px-4 pb-4">
@@ -82,19 +67,8 @@ function DesignTabContent() {
   const nodesById = useEditorStore((s) => s.nodesById)
   const artboard = useEditorStore((s) => s.artboard)
   const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform)
-  const updateCncMetadata = useEditorStore((s) => s.updateCncMetadata)
-  const selectMany = useEditorStore((s) => s.selectMany)
 
   const firstNode = selectedIds.length > 0 ? nodesById[selectedIds[0]] : null
-  const meta: CncMetadata = firstNode?.cncMetadata ?? {}
-  const allCutDepthGroups = useMemo(() => buildCutDepthGroups(nodesById), [nodesById])
-  const allOpenPaths = selectedIds.length > 0 && selectedIds.every((id) => {
-    const n = nodesById[id]
-    return n ? isOpenPathNode(n) : false
-  })
-  const availableEngraveTypes: NormalizedCutDepthFill[] = allOpenPaths
-    ? ENGRAVE_TYPES.filter((t) => t === 'contour')
-    : ENGRAVE_TYPES
 
   // Compute union bounding box (in canvas px = mm) for all selected nodes
   const selectionBounds = useMemo(() => {
@@ -120,20 +94,6 @@ function DesignTabContent() {
       y: artboard.height - selectionBounds.y - selectionBounds.height,
     }
   }, [selectionBounds, artboard.height])
-
-  const applyAll = (patch: Partial<CncMetadata>) => {
-    selectedIds.forEach((id) => updateCncMetadata(id, patch))
-  }
-
-  const applyToIds = (ids: string[], patch: Partial<CncMetadata>) => {
-    ids.forEach((id) => updateCncMetadata(id, patch))
-  }
-
-  const clearAll = () => {
-    selectedIds.forEach((id) =>
-      updateCncMetadata(id, { cutDepth: undefined, engraveType: undefined }),
-    )
-  }
 
   return (
     <div className="space-y-5">
@@ -237,141 +197,7 @@ function DesignTabContent() {
       )}
 
       {/* Cut depths */}
-      <section className="space-y-4">
-        <SectionHeading
-          title="Cut depths"
-          rightContent={
-            selectedIds.length > 1 ? (
-              <span className="rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-xs text-primary">
-                Editing {selectedIds.length} selected
-              </span>
-            ) : selectedIds.length === 0 && allCutDepthGroups.length > 0 ? (
-              <span className="rounded-full border border-border bg-content1 px-2 py-0.5 text-xs text-muted-foreground">
-                {allCutDepthGroups.length} groups
-              </span>
-            ) : null
-          }
-        />
-
-        {selectedIds.length === 0 ? (
-          <CutDepthGroupsList
-            groups={allCutDepthGroups}
-            showSelectButton
-            onDepthChange={(ids, value) => applyToIds(ids, { cutDepth: value })}
-            onFillModeChange={(ids, value) => applyToIds(ids, { engraveType: value })}
-            onSelectGroup={selectMany}
-          />
-        ) : (
-          <div className="space-y-4">
-            {/* Depth input */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
-                <div className="flex h-8 min-w-0 flex-1 items-center rounded-md border border-border bg-content1 px-2">
-                  <span className="shrink-0 text-xs text-muted-foreground">Depth</span>
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    max={String(artboard.thickness)}
-                    placeholder="e.g. 3.5"
-                    value={meta.cutDepth !== undefined ? String(meta.cutDepth) : ''}
-                    className="h-full min-w-0 flex-1 border-0 bg-transparent px-2 text-sm text-foreground outline-none"
-                    onChange={(e) => {
-                      const raw = e.target.value
-                      if (raw === '') {
-                        applyAll({ cutDepth: undefined })
-                        return
-                      }
-                      const parsed = parseFloat(raw)
-                      if (Number.isFinite(parsed) && parsed >= 0) {
-                        applyAll({ cutDepth: parsed })
-                      }
-                    }}
-                  />
-                  <span className="shrink-0 text-xs text-muted-foreground">mm</span>
-                </div>
-                {meta.cutDepth !== undefined && (
-                  <div
-                    className="h-4 w-4 shrink-0 rounded-full border border-border"
-                    title={`Depth: ${meta.cutDepth}mm`}
-                    style={{
-                      background: (() => {
-                        const ratio = Math.min(1, Math.max(0, meta.cutDepth / artboard.thickness))
-                        return `hsl(${Math.round(60 * (1 - ratio))}, 100%, 45%)`
-                      })(),
-                    }}
-                  />
-                )}
-              </div>
-              {/* Depth slider */}
-              <div className="flex items-center gap-2">
-                <Slider
-                  aria-label="Cut depth"
-                  className="flex-1"
-                  value={meta.cutDepth ?? 0}
-                  minValue={0}
-                  maxValue={artboard.thickness}
-                  step={0.1}
-                  onChange={(value) => applyAll({ cutDepth: value as number })}
-                >
-                  <Slider.Track
-                    className="relative h-2 w-full cursor-pointer rounded-full"
-                    style={{
-                      background:
-                        'linear-gradient(to right, hsl(60,100%,45%), hsl(30,100%,45%), hsl(0,100%,45%))',
-                    }}
-                  >
-                    <Slider.Fill className="absolute inset-y-0 left-0 rounded-full bg-white/25" />
-                    <Slider.Thumb
-                      className="block h-4 w-4 rounded-full border-2 border-white shadow-md outline-none"
-                      style={{
-                        background: (() => {
-                          const ratio = Math.min(1, Math.max(0, (meta.cutDepth ?? 0) / artboard.thickness))
-                          return `hsl(${Math.round(60 * (1 - ratio))}, 100%, 45%)`
-                        })(),
-                      }}
-                    />
-                  </Slider.Track>
-                </Slider>
-                <span className="shrink-0 text-xs text-muted-foreground">0 → {artboard.thickness}mm</span>
-              </div>
-            </div>
-
-            {/* Part fill / engrave type */}
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">Part fill</p>
-              <div className="flex gap-1.5">
-                {availableEngraveTypes.map((type) => {
-                  const isActive = normalizeEngraveType(meta.engraveType) === type
-                  return (
-                    <Button
-                      key={type}
-                      size="sm"
-                      variant={isActive ? 'primary' : 'secondary'}
-                      onPress={() => applyAll({ engraveType: isActive ? undefined : type })}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <FillModeIcon mode={type} />
-                        <span>{ENGRAVE_LABEL[type]}</span>
-                      </span>
-                    </Button>
-                  )
-                })}
-              </div>
-              {/* Engrave type visual legend */}
-              <div className="grid grid-cols-2 gap-1 text-xs text-muted-foreground">
-                <FillModeLegendItem mode="contour" />
-                <FillModeLegendItem mode="pocket" />
-              </div>
-            </div>
-
-            {/* Clear */}
-            <Button variant="secondary" className="w-full text-sm text-danger" onPress={clearAll}>
-              Clear CNC data
-            </Button>
-          </div>
-        )}
-      </section>
+      <CutDepthEditor />
     </div>
   )
 }
@@ -423,56 +249,6 @@ function NumberPill({
   )
 }
 
-function NumberField({
-  label,
-  unit,
-  value,
-  onChange,
-}: {
-  label: string
-  unit: string
-  value: number | null
-  onChange: (value: number | null) => void
-}) {
-  const [editValue, setEditValue] = useState<string | null>(null)
-
-  const commit = (raw: string) => {
-    const parsed = Number.parseFloat(raw)
-    if (raw.trim() === '') {
-      onChange(null)
-    } else if (Number.isFinite(parsed)) {
-      onChange(parsed)
-    }
-    setEditValue(null)
-  }
-
-  return (
-    <div className="grid gap-1">
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <div className="inline-flex h-8 items-center rounded-md border border-border bg-content1 px-2">
-        <input
-          type="text"
-          inputMode="decimal"
-          placeholder="—"
-          className="w-14 border-0 bg-transparent px-0 text-sm text-foreground outline-none placeholder:text-muted-foreground/50"
-          value={editValue ?? (value !== null ? String(value) : '')}
-          onFocus={(e) => {
-            setEditValue(value !== null ? String(value) : '')
-            requestAnimationFrame(() => e.target.select())
-          }}
-          onChange={(e) => setEditValue(e.target.value)}
-          onBlur={(e) => commit(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') e.currentTarget.blur()
-            else if (e.key === 'Escape') { setEditValue(null); e.currentTarget.blur() }
-          }}
-        />
-        <div className="pl-1 text-xs text-muted-foreground">{unit}</div>
-      </div>
-    </div>
-  )
-}
-
 function SectionHeading({
   title,
   rightContent,
@@ -486,200 +262,6 @@ function SectionHeading({
       {rightContent ? <div>{rightContent}</div> : null}
     </div>
   )
-}
-
-interface CutDepthGroup {
-  key: string
-  cutDepth: number
-  nodeIds: string[]
-  partCount: number
-  fillMode?: NormalizedCutDepthFill
-  mixedFill: boolean
-  color: string
-}
-
-function CutDepthGroupsList({
-  groups,
-  showSelectButton = false,
-  onDepthChange,
-  onFillModeChange,
-  onSelectGroup,
-}: {
-  groups: CutDepthGroup[]
-  showSelectButton?: boolean
-  onDepthChange: (ids: string[], value: number) => void
-  onFillModeChange: (ids: string[], value: EngraveType) => void
-  onSelectGroup?: (ids: string[]) => void
-}) {
-  if (groups.length === 0) {
-    return (
-      <div className="rounded-md border border-dashed border-border bg-content1 px-3 py-3 text-sm text-muted-foreground">
-        No assigned parts yet.
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-3">
-      {groups.map((group) => (
-        <div key={group.key} className="rounded-md border border-border bg-content1 p-3">
-          <div className="flex items-start gap-3">
-            <ColorSwatch color={group.color} className="mt-1" />
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <p className="text-sm font-medium text-foreground">{formatCutDepth(group.cutDepth)}</p>
-                <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
-                  {group.color}
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {group.partCount} {group.partCount === 1 ? 'part' : 'parts'}
-              </p>
-            </div>
-            {showSelectButton && onSelectGroup ? (
-              <Button size="sm" variant="secondary" onPress={() => onSelectGroup(group.nodeIds)}>
-                Select
-              </Button>
-            ) : null}
-          </div>
-
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <NumberField
-              label="Depth"
-              unit="mm"
-              value={group.cutDepth}
-              onChange={(value) => {
-                if (value !== null && value >= 0) {
-                  onDepthChange(group.nodeIds, value)
-                }
-              }}
-            />
-
-            <div className="space-y-2">
-              <p className="text-xs text-muted-foreground">Part fill</p>
-              <div className="flex gap-1.5">
-                {ENGRAVE_TYPES.map((type) => {
-                  const isActive = group.fillMode === type && !group.mixedFill
-                  return (
-                    <Button
-                      key={type}
-                      size="sm"
-                      variant={isActive ? 'primary' : 'secondary'}
-                      onPress={() => onFillModeChange(group.nodeIds, type)}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        <FillModeIcon mode={type} />
-                        <span>{ENGRAVE_LABEL[type]}</span>
-                      </span>
-                    </Button>
-                  )
-                })}
-              </div>
-              <p className="text-xs text-muted-foreground">
-                {group.mixedFill
-                  ? 'Mixed fill types in this depth group.'
-                  : group.fillMode ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <span>Current fill:</span>
-                      <FillModeIcon mode={group.fillMode} />
-                      <span>{ENGRAVE_LABEL[group.fillMode]}</span>
-                    </span>
-                  ) : 'Current fill: Not set.'}
-              </p>
-            </div>
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function buildCutDepthGroups(nodesById: Record<string, CanvasNode>): CutDepthGroup[] {
-  const groups = new Map<string, { cutDepth: number; nodeIds: string[]; fillModes: Set<NormalizedCutDepthFill> }>()
-
-  Object.values(nodesById).forEach((node) => {
-    if (isGroupNode(node)) {
-      return
-    }
-
-    const cutDepth = node.cncMetadata?.cutDepth
-    if (cutDepth === undefined) {
-      return
-    }
-
-    const key = cutDepth.toFixed(3)
-    const fillMode = normalizeEngraveType(node.cncMetadata?.engraveType)
-    const existing = groups.get(key)
-
-    if (existing) {
-      existing.nodeIds.push(node.id)
-      if (fillMode) {
-        existing.fillModes.add(fillMode)
-      }
-      return
-    }
-
-    groups.set(key, {
-      cutDepth,
-      nodeIds: [node.id],
-      fillModes: fillMode ? new Set([fillMode]) : new Set(),
-    })
-  })
-
-  return Array.from(groups.values())
-    .sort((a, b) => a.cutDepth - b.cutDepth)
-    .map((group) => {
-      const [fillMode] = Array.from(group.fillModes)
-
-      return {
-        key: `${group.cutDepth.toFixed(3)}-${fillMode ?? 'unset'}`,
-        cutDepth: group.cutDepth,
-        nodeIds: group.nodeIds,
-        partCount: group.nodeIds.length,
-        fillMode,
-        mixedFill: group.fillModes.size > 1,
-        color: depthToColor(group.cutDepth),
-      }
-    })
-}
-
-function formatCutDepth(depth: number): string {
-  return `${depth.toFixed(2)} mm`
-}
-
-function ColorSwatch({ color, className = '' }: { color: string; className?: string }) {
-  return (
-    <span
-      className={`h-4 w-4 shrink-0 rounded-[4px] border border-border ${className}`.trim()}
-      style={{ backgroundColor: color }}
-      title={color}
-    />
-  )
-}
-
-function FillModeIcon({ mode }: { mode: NormalizedCutDepthFill }) {
-  if (mode === 'contour') {
-    return <Geo className="h-4 w-4 shrink-0" aria-hidden="true" />
-  }
-
-  return <img src={GeoFillIcon} alt="" className="h-4 w-4 shrink-0" aria-hidden="true" />
-}
-
-function FillModeLegendItem({ mode }: { mode: NormalizedCutDepthFill }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <FillModeIcon mode={mode} />
-      <div
-        className={`h-3 w-3 rounded-sm border border-border ${mode === 'pocket' ? 'bg-[#d4d4d4]' : 'bg-transparent'}`}
-      />
-    </div>
-  )
-}
-
-function depthToColor(depth: number): string {
-  const ratio = Math.min(1, Math.max(0, depth / 20))
-  const hue = 60 - ratio * 60
-  return `hsl(${hue}, 90%, 55%)`
 }
 
 function round2(v: number): number {

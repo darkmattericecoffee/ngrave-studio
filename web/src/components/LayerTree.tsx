@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button, ButtonGroup, Dropdown, Input } from '@heroui/react'
+import { ChevronDown, ChevronRight } from '@gravity-ui/icons'
 
 import { AppIcon, Icons } from '../lib/icons'
+import { depthToColor } from '../lib/cncVisuals'
 import { useEditorStore } from '../store'
 import type { CanvasNode, GroupNode } from '../types/editor'
 
@@ -24,6 +26,27 @@ interface LayerTreeProps {
   onExportProject: () => void
 }
 
+// Build a flat ordered list of all rendered node IDs (depth-first), respecting
+// collapsed state and query filter. Used for shift-click and drag range selection.
+function buildFlatList(
+  ids: string[],
+  nodesById: Record<string, CanvasNode>,
+  collapsed: Record<string, boolean>,
+  query: string,
+): string[] {
+  const result: string[] = []
+  for (const id of ids) {
+    const node = nodesById[id]
+    if (!node) continue
+    if (!matchesQuery(node, nodesById, query.toLowerCase())) continue
+    result.push(id)
+    if (node.type === 'group' && !collapsed[id]) {
+      result.push(...buildFlatList((node as GroupNode).childIds, nodesById, collapsed, query))
+    }
+  }
+  return result
+}
+
 export function LayerTree({
   projectName,
   onProjectNameChange,
@@ -34,9 +57,15 @@ export function LayerTree({
   const rootIds = useEditorStore((s) => s.rootIds)
   const selectedIds = useEditorStore((s) => s.selectedIds)
   const selectOne = useEditorStore((s) => s.selectOne)
+  const selectMany = useEditorStore((s) => s.selectMany)
   const toggleSelection = useEditorStore((s) => s.toggleSelection)
+  const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform)
+  const setHoveredId = useEditorStore((s) => s.setHoveredId)
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  const [lastClickedId, setLastClickedId] = useState<string | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [dragAnchorId, setDragAnchorId] = useState<string | null>(null)
 
   const filteredRootIds = rootIds.filter((id) => {
     const node = nodesById[id]
@@ -44,6 +73,67 @@ export function LayerTree({
     if (!query.trim()) return true
     return matchesQuery(node, nodesById, query.toLowerCase())
   })
+
+  const flatList = useMemo(
+    () => buildFlatList(rootIds, nodesById, collapsed, query),
+    [rootIds, nodesById, collapsed, query],
+  )
+
+  useEffect(() => {
+    const onMouseUp = () => setIsDragging(false)
+    window.addEventListener('mouseup', onMouseUp)
+    return () => window.removeEventListener('mouseup', onMouseUp)
+  }, [])
+
+  function handleRowMouseDown(id: string, e: React.MouseEvent) {
+    if (e.button !== 0) return
+    e.preventDefault() // prevent text selection during drag
+
+    if (e.shiftKey && lastClickedId !== null) {
+      const a = flatList.indexOf(lastClickedId)
+      const b = flatList.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        selectMany(flatList.slice(Math.min(a, b), Math.max(a, b) + 1))
+      }
+      return
+    }
+    if (e.metaKey || e.ctrlKey) {
+      toggleSelection(id)
+    } else {
+      selectOne(id)
+    }
+    setLastClickedId(id)
+    setIsDragging(true)
+    setDragAnchorId(id)
+  }
+
+  function handleRowMouseEnter(id: string) {
+    setHoveredId(id)
+    if (!isDragging || dragAnchorId === null) return
+    const a = flatList.indexOf(dragAnchorId)
+    const b = flatList.indexOf(id)
+    if (a >= 0 && b >= 0) {
+      selectMany(flatList.slice(Math.min(a, b), Math.max(a, b) + 1))
+    }
+  }
+
+  function handleRowMouseLeave() {
+    setHoveredId(null)
+  }
+
+  function handleToggleCollapsed(id: string) {
+    setCollapsed((c) => ({ ...c, [id]: !c[id] }))
+  }
+
+  function handleToggleVisible(id: string) {
+    const node = nodesById[id]
+    if (node) updateNodeTransform(id, { visible: !node.visible })
+  }
+
+  function handleToggleLocked(id: string) {
+    const node = nodesById[id]
+    if (node) updateNodeTransform(id, { locked: !node.locked })
+  }
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
@@ -94,7 +184,7 @@ export function LayerTree({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
         {filteredRootIds.length === 0 ? (
-          <div className="rounded-md border border-dashed border-border bg-content1 px-3 py-3 text-sm text-muted-foreground">
+          <div className="rounded-md border border-dashed border-border bg-[var(--surface)] px-3 py-3 text-sm text-muted-foreground">
             {rootIds.length === 0
               ? 'Drop an SVG or use Import SVG to start.'
               : 'No results match your search.'}
@@ -108,52 +198,107 @@ export function LayerTree({
               const childCount = isGroup ? (node as GroupNode).childIds.length : 0
               const selected = selectedIds.includes(id)
               const isCollapsed = collapsed[id] ?? false
+              const cncColor = node.cncMetadata?.cutDepth != null
+                ? depthToColor(node.cncMetadata.cutDepth)
+                : null
 
               return (
-                <div key={id} className="rounded-lg border border-border bg-content1">
+                <div key={id} className="rounded-lg border border-border bg-[var(--surface)]">
                   <button
                     className={cn(
-                      'flex w-full items-center justify-between rounded-lg px-3 py-3 text-left transition hover:bg-content2',
-                      selected && 'bg-content3',
+                      'group/row flex w-full items-center justify-between rounded-lg px-3 py-3 text-left transition-colors hover:bg-[var(--surface-secondary)] active:bg-[var(--surface-tertiary)]',
+                      selected && 'bg-[var(--surface-tertiary)]',
+                      !node.visible && 'opacity-50',
                     )}
-                    onClick={(e) => {
-                      if (e.metaKey || e.ctrlKey || e.shiftKey) {
-                        toggleSelection(id)
-                      } else {
-                        selectOne(id)
-                      }
-                    }}
+                    onMouseDown={(e) => handleRowMouseDown(id, e)}
+                    onMouseEnter={() => handleRowMouseEnter(id)}
+                    onMouseLeave={handleRowMouseLeave}
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       {isGroup ? (
                         <span
                           role="button"
                           tabIndex={0}
-                          className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-content2"
+                          className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-[var(--surface-tertiary)]"
                           onClick={(e) => {
                             e.stopPropagation()
-                            setCollapsed((c) => ({ ...c, [id]: !isCollapsed }))
+                            handleToggleCollapsed(id)
                           }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault()
                               e.stopPropagation()
-                              setCollapsed((c) => ({ ...c, [id]: !isCollapsed }))
+                              handleToggleCollapsed(id)
                             }
                           }}
                         >
                           {isCollapsed
-                            ? <AppIcon icon={Icons.chevronRight} className="h-4 w-4" />
-                            : <AppIcon icon={Icons.chevronDown} className="h-4 w-4" />}
+                            ? <ChevronRight className="h-4 w-4" />
+                            : <ChevronDown className="h-4 w-4" />}
                         </span>
                       ) : (
                         <span className="inline-flex h-5 w-5 items-center justify-center" />
                       )}
                       <AppIcon icon={Icons.picture} className="h-4 w-4 text-muted-foreground" />
+                      {cncColor ? (
+                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cncColor }} />
+                      ) : null}
                       <span className="truncate text-sm font-medium">{node.name || id}</span>
                     </span>
-                    <span className="shrink-0 text-xs text-muted-foreground">
-                      {isGroup ? `${childCount} parts` : NODE_TYPE_LABEL[node.type]}
+                    <span className="flex shrink-0 items-center gap-1">
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        aria-label={node.visible ? 'Hide layer' : 'Show layer'}
+                        className={cn(
+                          'inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-[var(--surface-tertiary)]',
+                          node.visible
+                            ? 'opacity-0 group-hover/row:opacity-100'
+                            : 'opacity-100',
+                        )}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleToggleVisible(id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleToggleVisible(id)
+                          }
+                        }}
+                      >
+                        <AppIcon icon={node.visible ? Icons.eye : Icons.eyeOff} className="h-3.5 w-3.5" />
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={-1}
+                        aria-label={node.locked ? 'Unlock layer' : 'Lock layer'}
+                        className={cn(
+                          'inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-[var(--surface-tertiary)]',
+                          node.locked
+                            ? 'opacity-100'
+                            : 'opacity-0 group-hover/row:opacity-100',
+                        )}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleToggleLocked(id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleToggleLocked(id)
+                          }
+                        }}
+                      >
+                        <AppIcon icon={node.locked ? Icons.lock : Icons.lockOpen} className="h-3.5 w-3.5" />
+                      </span>
+                      <span className="min-w-[3rem] text-right text-xs text-muted-foreground">
+                        {isGroup ? `${childCount} parts` : NODE_TYPE_LABEL[node.type]}
+                      </span>
                     </span>
                   </button>
 
@@ -167,10 +312,14 @@ export function LayerTree({
                           selectedIds={selectedIds}
                           query={query}
                           depth={1}
-                          onSelect={(id, additive) => {
-                            if (additive) toggleSelection(id)
-                            else selectOne(id)
-                          }}
+                          collapsed={collapsed[childId] ?? false}
+                          collapsedMap={collapsed}
+                          onToggleCollapsed={handleToggleCollapsed}
+                          onRowMouseDown={handleRowMouseDown}
+                          onRowMouseEnter={handleRowMouseEnter}
+                          onRowMouseLeave={handleRowMouseLeave}
+                          onToggleVisible={handleToggleVisible}
+                          onToggleLocked={handleToggleLocked}
                         />
                       ))}
                     </div>
@@ -191,16 +340,29 @@ function TreeNode({
   selectedIds,
   query,
   depth,
-  onSelect,
+  collapsed,
+  collapsedMap,
+  onToggleCollapsed,
+  onRowMouseDown,
+  onRowMouseEnter,
+  onRowMouseLeave,
+  onToggleVisible,
+  onToggleLocked,
 }: {
   nodeId: string
   nodesById: Record<string, CanvasNode>
   selectedIds: string[]
   query: string
   depth: number
-  onSelect: (id: string, additive: boolean) => void
+  collapsed: boolean
+  collapsedMap: Record<string, boolean>
+  onToggleCollapsed: (id: string) => void
+  onRowMouseDown: (id: string, e: React.MouseEvent) => void
+  onRowMouseEnter: (id: string) => void
+  onRowMouseLeave: () => void
+  onToggleVisible: (id: string) => void
+  onToggleLocked: (id: string) => void
 }) {
-  const [collapsed, setCollapsed] = useState(false)
   const node = nodesById[nodeId]
   if (!node) return null
 
@@ -227,11 +389,14 @@ function TreeNode({
     <div className="space-y-0.5">
       <button
         className={cn(
-          'flex w-full items-center justify-between rounded-md py-2 pr-3 text-left hover:bg-content2',
-          isSelected && 'bg-content3',
+          'group/row flex w-full items-center justify-between rounded-md py-2 pr-3 text-left transition-colors hover:bg-[var(--surface-secondary)] active:bg-[var(--surface-tertiary)]',
+          isSelected && 'bg-[var(--surface-tertiary)]',
+          !node.visible && 'opacity-50',
         )}
         style={{ paddingLeft: `${12 + depth * 14}px` }}
-        onClick={(e) => onSelect(nodeId, e.metaKey || e.ctrlKey || e.shiftKey)}
+        onMouseDown={(e) => onRowMouseDown(nodeId, e)}
+        onMouseEnter={() => onRowMouseEnter(nodeId)}
+        onMouseLeave={onRowMouseLeave}
       >
         <span className="flex min-w-0 items-center gap-2">
           {isGroup ? (
@@ -241,19 +406,19 @@ function TreeNode({
               className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground"
               onClick={(e) => {
                 e.stopPropagation()
-                setCollapsed((c) => !c)
+                onToggleCollapsed(nodeId)
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
                   e.stopPropagation()
-                  setCollapsed((c) => !c)
+                  onToggleCollapsed(nodeId)
                 }
               }}
             >
               {collapsed
-                ? <AppIcon icon={Icons.chevronRight} className="h-3.5 w-3.5" />
-                : <AppIcon icon={Icons.chevronDown} className="h-3.5 w-3.5" />}
+                ? <ChevronRight className="h-3.5 w-3.5" />
+                : <ChevronDown className="h-3.5 w-3.5" />}
             </span>
           ) : null}
           {cncColor ? (
@@ -261,7 +426,59 @@ function TreeNode({
           ) : null}
           <span className="truncate text-sm">{label}</span>
         </span>
-        <span className="shrink-0 text-xs text-muted-foreground">{typeTag}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          <span
+            role="button"
+            tabIndex={-1}
+            aria-label={node.visible ? 'Hide layer' : 'Show layer'}
+            className={cn(
+              'inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-[var(--surface-tertiary)]',
+              node.visible
+                ? 'opacity-0 group-hover/row:opacity-100'
+                : 'opacity-100',
+            )}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleVisible(nodeId)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onToggleVisible(nodeId)
+              }
+            }}
+          >
+            <AppIcon icon={node.visible ? Icons.eye : Icons.eyeOff} className="h-3 w-3" />
+          </span>
+          <span
+            role="button"
+            tabIndex={-1}
+            aria-label={node.locked ? 'Unlock layer' : 'Lock layer'}
+            className={cn(
+              'inline-flex h-4 w-4 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-[var(--surface-tertiary)]',
+              node.locked
+                ? 'opacity-100'
+                : 'opacity-0 group-hover/row:opacity-100',
+            )}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation()
+              onToggleLocked(nodeId)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                onToggleLocked(nodeId)
+              }
+            }}
+          >
+            <AppIcon icon={node.locked ? Icons.lock : Icons.lockOpen} className="h-3 w-3" />
+          </span>
+          <span className="min-w-[2.5rem] text-right text-xs text-muted-foreground">{typeTag}</span>
+        </span>
       </button>
 
       {isGroup && !collapsed
@@ -273,7 +490,14 @@ function TreeNode({
               selectedIds={selectedIds}
               query={query}
               depth={depth + 1}
-              onSelect={onSelect}
+              collapsed={collapsedMap[cid] ?? false}
+              collapsedMap={collapsedMap}
+              onToggleCollapsed={onToggleCollapsed}
+              onRowMouseDown={onRowMouseDown}
+              onRowMouseEnter={onRowMouseEnter}
+              onRowMouseLeave={onRowMouseLeave}
+              onToggleVisible={onToggleVisible}
+              onToggleLocked={onToggleLocked}
             />
           ))
         : null}
@@ -291,10 +515,4 @@ function matchesQuery(node: CanvasNode, nodesById: Record<string, CanvasNode>, q
     })
   }
   return false
-}
-
-function depthToColor(depth: number): string {
-  const t = Math.min(1, Math.max(0, depth / 20))
-  const hue = 60 - t * 60 // yellow (60) → red (0)
-  return `hsl(${hue}, 90%, 55%)`
 }

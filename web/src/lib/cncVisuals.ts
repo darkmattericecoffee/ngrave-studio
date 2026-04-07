@@ -1,6 +1,12 @@
 import type { CanvasNode, CncMetadata, EngraveType } from '../types/editor'
 
-const MAX_CUT_DEPTH = 20
+export const MAX_CUT_DEPTH = 20
+
+export function depthToColor(depth: number, maxDepth: number = MAX_CUT_DEPTH): string {
+  const ratio = Math.min(1, Math.max(0, depth / maxDepth))
+  const hue = 60 - ratio * 60
+  return `hsl(${hue}, 90%, 55%)`
+}
 
 /** Returns true if the node is geometrically open (not closed). */
 export function isGeometricallyOpen(node: CanvasNode): boolean {
@@ -26,13 +32,7 @@ export type NormalizedEngraveType = 'contour' | 'pocket'
 
 export interface CncVisualOverrides {
   stroke?: string
-  strokeWidth?: number
   fill?: string
-  shadowColor?: string
-  shadowBlur?: number
-  shadowOffsetX?: number
-  shadowOffsetY?: number
-  shadowEnabled?: boolean
 }
 
 const previewAlphaForDepth = (cutDepth: number): number => {
@@ -68,18 +68,16 @@ export function getCncVisualOverrides(
   cncMetadata?: CncMetadata,
   parentCncMetadata?: CncMetadata,
 ): CncVisualOverrides {
-  if (!cncMetadata) return {}
+  // Use own metadata, falling back to parent metadata for inheritance
+  const effectiveMeta = cncMetadata?.cutDepth !== undefined
+    ? cncMetadata
+    : parentCncMetadata
 
-  const { cutDepth, engraveType } = cncMetadata
+  if (!effectiveMeta) return {}
+
+  const { cutDepth, engraveType } = effectiveMeta
 
   if (cutDepth === undefined || cutDepth === null) return {}
-
-  if (
-    parentCncMetadata?.cutDepth !== undefined &&
-    parentCncMetadata.cutDepth === cutDepth
-  ) {
-    return {}
-  }
 
   const ratio = Math.min(1, Math.max(0, cutDepth / MAX_CUT_DEPTH))
   const type = resolveEngraveType(engraveType, 'contour')
@@ -88,24 +86,11 @@ export function getCncVisualOverrides(
     const fillAlpha = 0.30 + ratio * 0.65
     return {
       fill: `rgba(15, 8, 3, ${fillAlpha.toFixed(2)})`,
-      stroke: `rgba(0, 0, 0, ${(0.4 + ratio * 0.5).toFixed(2)})`,
-      strokeWidth: 4,
-      shadowColor: 'rgba(0, 0, 0, 0.9)',
-      shadowBlur: 2 + ratio * 12,
-      shadowOffsetX: 0,
-      shadowOffsetY: 1 + ratio * 3,
-      shadowEnabled: true,
+      stroke: depthToColor(cutDepth),
     }
   }
 
-  const hue = Math.round(60 * (1 - ratio))
   return {
-    stroke: `hsl(${hue}, 100%, 45%)`,
-    strokeWidth: 1 + ratio * 1.5,
-    shadowColor: 'rgba(0, 0, 0, 0.75)',
-    shadowBlur: 1 + ratio * 5,
-    shadowOffsetX: 0,
-    shadowOffsetY: 1,
-    shadowEnabled: true,
+    stroke: depthToColor(cutDepth),
   }
 }

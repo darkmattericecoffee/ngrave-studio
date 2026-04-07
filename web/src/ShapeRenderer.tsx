@@ -48,6 +48,7 @@ interface SharedShapeProps {
   hitboxOnly?: boolean
   parentCncMetadata?: CncMetadata
   toolDiameter?: number
+  viewportScale?: number
   registerNodeRef: (nodeId: string, node: Konva.Node | null) => void
   onPointerDown: (event: KonvaEventObject<MouseEvent | TouchEvent>) => void
   onClick: (event: KonvaEventObject<MouseEvent | TouchEvent>) => void
@@ -68,6 +69,7 @@ function SvgPathNode({
   outlineOnly,
   parentCncMetadata,
   toolDiameter,
+  viewportScale,
   registerNodeRef,
   onPointerDown,
   onClick,
@@ -81,7 +83,8 @@ function SvgPathNode({
     : {}
   const isOpenPath = toolDiameter != null && isOpenPathNode(node)
   const useCncStroke = isOpenPath && showCncOverrides !== false
-  const baseStrokeWidth = useCncStroke ? toolDiameter! : node.strokeWidth
+  const cncStrokeWidth = toolDiameter != null && viewportScale ? toolDiameter / viewportScale : toolDiameter
+  const baseStrokeWidth = useCncStroke ? cncStrokeWidth! : node.strokeWidth
   const baseStroke = useCncStroke && !node.stroke ? 'rgba(30, 20, 10, 0.65)' : node.stroke
   const visualProps = Object.assign(
     { fill: outlineOnly ? '' : node.fill, stroke: baseStroke, strokeWidth: baseStrokeWidth },
@@ -158,6 +161,7 @@ export function ShapeRenderer({
   const directSelectionModifierActive = useEditorStore((state) => state.directSelectionModifierActive)
   const pendingImport = useEditorStore((state) => state.ui.pendingImport)
   const toolDiameter = useEditorStore((state) => state.machiningSettings.toolDiameter)
+  const viewportScale = useEditorStore((state) => state.viewport.scale)
   const updateNodeTransform = useEditorStore((state) => state.updateNodeTransform)
   const { enterFocusMode, isSelected, selectNode } = useSelection()
 
@@ -253,6 +257,7 @@ export function ShapeRenderer({
     hitboxOnly,
     parentCncMetadata,
     toolDiameter,
+    viewportScale,
     registerNodeRef,
     onPointerDown,
     onClick,
@@ -421,7 +426,8 @@ export function ShapeRenderer({
       : {}
     const isOpenPath = toolDiameter != null && isOpenPathNode(node)
     const useCncStroke = isOpenPath && showCncOverrides
-    const baseStrokeWidth = useCncStroke ? toolDiameter! : node.strokeWidth
+    const cncStrokeWidth = toolDiameter != null ? toolDiameter / viewportScale : toolDiameter
+    const baseStrokeWidth = useCncStroke ? cncStrokeWidth! : node.strokeWidth
     const baseStroke = useCncStroke && !node.stroke ? 'rgba(30, 20, 10, 0.65)' : node.stroke
     const visualProps = Object.assign(
       {

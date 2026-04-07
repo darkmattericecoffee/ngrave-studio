@@ -15,6 +15,11 @@ interface MaterialTabContentProps {
   onMaterialChange: (preset: MaterialPreset) => void
 }
 
+function defaultStepover(shape: RouterBitShape, diameter: number): number {
+  const factor = shape === 'Flat' ? 0.8 : 0.4
+  return Math.round(diameter * factor * 100) / 100
+}
+
 export function MaterialTabContent({ materialPreset, onMaterialChange }: MaterialTabContentProps) {
   const artboard = useEditorStore((s) => s.artboard)
   const selectedStage = useEditorStore((s) => s.selectedStage)
@@ -23,6 +28,7 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
   const setMachiningSettings = useEditorStore((s) => s.setMachiningSettings)
   const nodesById = useEditorStore((s) => s.nodesById)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [stepoverFlash, setStepoverFlash] = useState(false)
 
   const setField = (patch: Partial<MachiningSettings>) => setMachiningSettings(patch)
 
@@ -92,7 +98,16 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
                 <button
                   key={shape}
                   type="button"
-                  onClick={() => setField({ toolShape: shape })}
+                  onClick={() => {
+                    const prevDefault = defaultStepover(machiningSettings.toolShape, machiningSettings.toolDiameter)
+                    const newDefault = defaultStepover(shape, machiningSettings.toolDiameter)
+                    const isAutoStepover = machiningSettings.stepover === null || machiningSettings.stepover === prevDefault
+                    setField({ toolShape: shape, ...(isAutoStepover && { stepover: newDefault }) })
+                    if (isAutoStepover && shape !== machiningSettings.toolShape) {
+                      setStepoverFlash(true)
+                      setTimeout(() => setStepoverFlash(false), 1000)
+                    }
+                  }}
                   className={`flex flex-col items-center gap-1 rounded-lg border-2 px-2 py-2 transition ${
                     machiningSettings.toolShape === shape
                       ? 'border-primary bg-primary/10'
@@ -105,6 +120,10 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
               ),
             )}
           </div>
+        </div>
+        <div className={`transition-all duration-200 ${stepoverFlash ? 'ring-2 ring-primary rounded-lg p-1 -m-1' : ''}`}>
+          <NumberField label="Stepover" unit="mm" value={machiningSettings.stepover}
+            onChange={(v) => { setStepoverFlash(false); setField({ stepover: v }) }} />
         </div>
         <div className="flex items-end gap-3">
           <div className="grid gap-1">
@@ -186,8 +205,6 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
                 ? `Bridge uses the advanced max stepdown of ${effectiveMaxStepdown} mm.`
                 : `Bridge derives max stepdown from Passes: ${effectiveMaxStepdown ?? maxCutDepth} mm.`}
             </div>
-            <NumberField label="Stepover" unit="mm" value={machiningSettings.stepover}
-              onChange={(v) => setField({ stepover: v })} />
             <div className="w-full space-y-1">
               <label className="text-xs text-muted-foreground">Max Fill Passes</label>
               <div className="grid grid-cols-4 gap-1">
