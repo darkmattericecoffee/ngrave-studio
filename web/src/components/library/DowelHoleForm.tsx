@@ -1,3 +1,5 @@
+import { Description, Label, Switch } from '@heroui/react'
+
 import { useEditorStore } from '../../store'
 import type { DowelHoleParams } from '../../types/editor'
 import { GeneratorFormField } from './GeneratorFormField'
@@ -18,22 +20,26 @@ export function DowelHoleForm({ initialParams, mode, nodeId, onPlace, onUpdate }
 
   return (
     <div className="space-y-4">
-      {/* Shape */}
       <div>
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Shape</p>
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="matchToolDiameter"
-              checked={p.matchToolDiameter}
-              onChange={(e) => setPatch({ matchToolDiameter: e.target.checked, diameter: e.target.checked ? toolDiameter : p.diameter })}
-              className="h-3 w-3 rounded accent-primary"
-            />
-            <label htmlFor="matchToolDiameter" className="text-xs text-muted-foreground">
-              Match router bit diameter ({toolDiameter} mm)
-            </label>
-          </div>
+        <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Shape</p>
+        <div className="space-y-3">
+          <Switch
+            isSelected={p.matchToolDiameter}
+            onChange={(checked) => setPatch({
+              matchToolDiameter: checked,
+              diameter: checked ? toolDiameter : p.diameter,
+            })}
+          >
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+            <Switch.Content>
+              <Label className="text-sm text-foreground">Match router bit</Label>
+              <Description className="text-xs text-muted-foreground">
+                Diameter follows the active bit diameter ({toolDiameter} mm).
+              </Description>
+            </Switch.Content>
+          </Switch>
           <GeneratorFormField
             label="Diameter"
             value={p.matchToolDiameter ? toolDiameter : p.diameter}
@@ -44,9 +50,8 @@ export function DowelHoleForm({ initialParams, mode, nodeId, onPlace, onUpdate }
         </div>
       </div>
 
-      {/* Distribution */}
       <div>
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Distribution</p>
+        <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Distribution</p>
         <div className="space-y-2">
           <GeneratorFormField label="Columns" value={p.colCount} min={1} max={50} step={1} onChange={(v) => setPatch({ colCount: Math.max(1, Math.round(v)) })} />
           <GeneratorFormField label="Col spacing" value={p.colSpacing} unit="mm" onChange={(v) => setPatch({ colSpacing: v })} />
@@ -55,11 +60,10 @@ export function DowelHoleForm({ initialParams, mode, nodeId, onPlace, onUpdate }
         </div>
       </div>
 
-      {/* Output type */}
       <div>
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Output</p>
+        <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Output</p>
         {p.matchToolDiameter ? (
-          <div className="rounded bg-[var(--surface-secondary)] px-2 py-1 text-xs text-muted-foreground">
+          <div className="rounded-xl bg-[var(--surface-secondary)] px-3 py-2 text-xs text-muted-foreground">
             Plunge (forced for bit-diameter holes)
           </div>
         ) : (
@@ -81,11 +85,10 @@ export function DowelHoleForm({ initialParams, mode, nodeId, onPlace, onUpdate }
         )}
       </div>
 
-      {/* Action button */}
       {mode === 'new' && onPlace && (
         <button
           onClick={() => onPlace(p)}
-          className="w-full rounded bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          className="w-full rounded-xl bg-primary px-3 py-2.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
         >
           Place on artboard
         </button>
@@ -93,7 +96,7 @@ export function DowelHoleForm({ initialParams, mode, nodeId, onPlace, onUpdate }
       {mode === 'edit' && onUpdate && (
         <button
           onClick={() => onUpdate(p)}
-          className="w-full rounded bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          className="w-full rounded-xl bg-primary px-3 py-2.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
         >
           Apply changes
         </button>

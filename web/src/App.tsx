@@ -2,7 +2,7 @@ import { useRef, useState, useCallback } from 'react'
 import type { ChangeEvent, DragEvent } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 
-import { Label, ProgressBar } from '@heroui/react'
+import { Button, ButtonGroup, Dropdown, Input, Label, ProgressBar, Tabs } from '@heroui/react'
 import { Canvas } from './Canvas'
 import { LayerTree } from './components/LayerTree'
 import { LibraryPanel } from './components/library/LibraryPanel'
@@ -13,10 +13,12 @@ import { PlaybackTimeline } from './components/preview/PlaybackTimeline'
 import { GcodeViewer } from './components/preview/GcodeViewer'
 import { useGcodeGeneration } from './hooks/useGcodeGeneration'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
+import { AppIcon, Icons } from './lib/icons'
 import { importSvgToScene } from './lib/svgImport'
 import { exportProjectSVG } from './lib/svgExport'
 import { DEFAULT_MATERIAL, MATERIAL_PRESETS } from './lib/materialPresets'
 import type { MaterialPreset } from './lib/materialPresets'
+import { getAutoImportPlacement } from './lib/importPlacement'
 import { useEditorStore } from './store'
 import { insertTabs } from './lib/gcodeTabInsertion'
 import type { ViewMode } from './types/preview'
@@ -96,7 +98,15 @@ function App() {
 
       if (autoPlace) {
         stagePendingImport(pendingScene)
-        placePendingImport({ x: 0, y: Math.max(0, artboard.height - pendingScene.height) })
+        placePendingImport(
+          getAutoImportPlacement({
+            artboard,
+            nodesById,
+            rootIds,
+            width: pendingScene.width,
+            height: pendingScene.height,
+          }),
+        )
       } else {
         stagePendingImport(pendingScene)
       }
@@ -185,6 +195,8 @@ function App() {
 
   const isPreview3d = viewMode === 'preview3d'
   const isPreview2d = viewMode === 'preview2d'
+  const showLibraryEmptyState = !isPreview3d && !isPreview2d && isCanvasEmpty && leftPanelTab === 'library'
+  const showSvgImportEmptyState = !isPreview3d && !isPreview2d && isCanvasEmpty && leftPanelTab !== 'library'
 
   return (
     <div
@@ -209,30 +221,73 @@ function App() {
               <GcodeViewer />
             ) : (
               <>
-                {/* Tab strip */}
-                <div className="flex shrink-0 border-b border-border">
-                  <button
-                    className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${leftPanelTab === 'layers' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                    onClick={() => setLeftPanelTab('layers')}
-                  >
-                    Layers
-                  </button>
-                  <button
-                    className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${leftPanelTab === 'library' ? 'border-b-2 border-primary text-foreground' : 'text-muted-foreground hover:text-foreground'}`}
-                    onClick={() => setLeftPanelTab('library')}
-                  >
-                    Library
-                  </button>
+                <div className="shrink-0 border-b border-border px-4 py-4">
+                  <div className="text-xl font-bold text-foreground">Engrav Studio</div>
+
+                  <Input
+                    aria-label="Project name"
+                    className="mt-4 w-full max-w-none"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                  />
+
+                  <div className="mt-4">
+                    <Tabs
+                      className="w-full"
+                      selectedKey={leftPanelTab}
+                      onSelectionChange={(key) => setLeftPanelTab(String(key) as 'layers' | 'library')}
+                    >
+                      <Tabs.ListContainer className="w-full">
+                        <Tabs.List aria-label="Left sidebar tabs" className="grid w-full grid-cols-2">
+                          <Tabs.Tab id="layers" className="cursor-pointer">
+                            Layers
+                            <Tabs.Indicator />
+                          </Tabs.Tab>
+                          <Tabs.Tab id="library" className="cursor-pointer">
+                            Library
+                            <Tabs.Indicator />
+                          </Tabs.Tab>
+                        </Tabs.List>
+                      </Tabs.ListContainer>
+                    </Tabs>
+                  </div>
+
+                  {leftPanelTab === 'layers' ? (
+                    <ButtonGroup className="mt-4 w-full" variant="secondary">
+                      <Button
+                        className="flex-1 cursor-pointer justify-start text-xs font-normal text-foreground"
+                        onPress={() => fileInputRef.current?.click()}
+                      >
+                        <AppIcon icon={Icons.fileUpload} className="h-4 w-4 text-foreground" />
+                        Import SVG
+                      </Button>
+                      <Dropdown>
+                        <Button
+                          isIconOnly
+                          aria-label="More options"
+                          className="cursor-pointer bg-[var(--surface)] text-foreground hover:bg-[var(--surface-secondary)]"
+                        >
+                          <ButtonGroup.Separator />
+                          <AppIcon icon={Icons.fileArrowDown} className="h-4 w-4 text-foreground" />
+                        </Button>
+                        <Dropdown.Popover placement="bottom end">
+                          <Dropdown.Menu onAction={(key) => {
+                            if (key === 'export-project') handleProjectExport()
+                          }}>
+                            <Dropdown.Item id="export-project">
+                              <AppIcon icon={Icons.fileArrowDown} className="mr-1.5 inline h-4 w-4 text-foreground" />
+                              Export Project
+                            </Dropdown.Item>
+                          </Dropdown.Menu>
+                        </Dropdown.Popover>
+                      </Dropdown>
+                    </ButtonGroup>
+                  ) : null}
                 </div>
                 {/* Panel body */}
                 <div className="min-h-0 flex-1 overflow-hidden">
                   {leftPanelTab === 'layers' ? (
-                    <LayerTree
-                      projectName={projectName}
-                      onProjectNameChange={setProjectName}
-                      onImportSvg={() => fileInputRef.current?.click()}
-                      onExportProject={handleProjectExport}
-                    />
+                    <LayerTree />
                   ) : (
                     <LibraryPanel />
                   )}
@@ -285,7 +340,7 @@ function App() {
               )}
 
               {/* Empty-state drop zone */}
-              {!isPreview3d && !isPreview2d && isCanvasEmpty && (
+              {showSvgImportEmptyState && (
                 <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
                   <div
                     className={`pointer-events-auto relative flex min-w-[500px] max-w-[80%] flex-col items-center gap-4 rounded-2xl border-2 border-dashed px-12 py-10 text-center backdrop-blur-md transition-all duration-220 ease-out ${
@@ -319,6 +374,38 @@ function App() {
                       </p>
                       <p className="mt-1 text-sm text-muted-foreground">
                         {isDragOver ? 'Release to import this file' : 'Drop a file anywhere, or click to browse'}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {showLibraryEmptyState && (
+                <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+                  <div className="relative flex min-w-[500px] max-w-[80%] flex-col items-center gap-4 rounded-2xl border border-white/15 bg-black/72 px-12 py-10 text-center shadow-[0_10px_26px_rgba(0,0,0,0.3)] backdrop-blur-md">
+                    <div className="pointer-events-none absolute inset-[6px] rounded-[14px] border border-white/10" />
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      width="40"
+                      height="40"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      className="relative text-muted-foreground"
+                    >
+                      <rect x="3" y="4" width="7" height="7" rx="1.5" />
+                      <rect x="14" y="4" width="7" height="7" rx="1.5" />
+                      <rect x="8.5" y="13" width="7" height="7" rx="1.5" />
+                    </svg>
+                    <div className="relative">
+                      <p className="text-base font-semibold text-foreground">
+                        Choose a generated shape from the library
+                      </p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Place it on the artboard to start building your layout.
                       </p>
                     </div>
                   </div>

@@ -26,6 +26,7 @@ import { insertTabs } from './lib/gcodeTabInsertion'
 import type { CameraType, PreviewState, ToolpathGroup, ViewMode } from './types/preview'
 import { DEFAULT_MATERIAL } from './lib/materialPresets'
 import type { MaterialPreset } from './lib/materialPresets'
+import { getAutoImportPlacement } from './lib/importPlacement'
 
 type HistorySnapshot = {
   nodesById: Record<string, CanvasNode>
@@ -761,7 +762,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setLeftPanelTab: (tab) => set({ leftPanelTab: tab }),
 
   placeGenerator: (params) => {
-    const { artboard, machiningSettings } = get()
+    const { artboard, machiningSettings, nodesById, rootIds } = get()
     const resolved = resolveParamsAgainstTool(params, machiningSettings)
     const svgText = runGenerator(resolved)
     const pending = importSvgToScene({
@@ -790,6 +791,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       ;(rootNode as GroupNode).generatorMetadata = { params: resolved }
     }
     get().stagePendingImport(pending)
+    get().placePendingImport(
+      getAutoImportPlacement({
+        artboard,
+        nodesById,
+        rootIds,
+        width: pending.width,
+        height: pending.height,
+      }),
+    )
   },
 
   updateGeneratorParams: (nodeId, params) => {

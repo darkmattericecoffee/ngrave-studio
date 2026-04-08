@@ -1,3 +1,5 @@
+import { Description, Label, Switch } from '@heroui/react'
+
 import { useEditorStore } from '../../store'
 import type { TenonParams } from '../../types/editor'
 import { GeneratorFormField } from './GeneratorFormField'
@@ -18,22 +20,26 @@ export function TenonForm({ initialParams, mode, nodeId, onPlace, onUpdate }: Te
 
   return (
     <div className="space-y-4">
-      {/* Shape */}
       <div>
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Shape</p>
-        <div className="space-y-2">
-          <div className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              id="matchToolWidth"
-              checked={p.matchToolWidth}
-              onChange={(e) => setPatch({ matchToolWidth: e.target.checked, width: e.target.checked ? toolDiameter : p.width })}
-              className="h-3 w-3 rounded accent-primary"
-            />
-            <label htmlFor="matchToolWidth" className="text-xs text-muted-foreground">
-              Match router bit width ({toolDiameter} mm)
-            </label>
-          </div>
+        <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Shape</p>
+        <div className="space-y-3">
+          <Switch
+            isSelected={p.matchToolWidth}
+            onChange={(checked) => setPatch({
+              matchToolWidth: checked,
+              width: checked ? toolDiameter : p.width,
+            })}
+          >
+            <Switch.Control>
+              <Switch.Thumb />
+            </Switch.Control>
+            <Switch.Content>
+              <Label className="text-sm text-foreground">Match router bit</Label>
+              <Description className="text-xs text-muted-foreground">
+                Width follows the active bit diameter ({toolDiameter} mm).
+              </Description>
+            </Switch.Content>
+          </Switch>
           <GeneratorFormField
             label="Width"
             value={p.matchToolWidth ? toolDiameter : p.width}
@@ -50,9 +56,8 @@ export function TenonForm({ initialParams, mode, nodeId, onPlace, onUpdate }: Te
         </div>
       </div>
 
-      {/* Distribution */}
       <div>
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Distribution</p>
+        <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Distribution</p>
         <div className="space-y-2">
           <GeneratorFormField label="Columns" value={p.colCount} min={1} max={50} step={1} onChange={(v) => setPatch({ colCount: Math.max(1, Math.round(v)) })} />
           <GeneratorFormField label="Col spacing" value={p.colSpacing} unit="mm" onChange={(v) => setPatch({ colSpacing: v })} />
@@ -61,11 +66,10 @@ export function TenonForm({ initialParams, mode, nodeId, onPlace, onUpdate }: Te
         </div>
       </div>
 
-      {/* Output type */}
       <div>
-        <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">Output</p>
+        <p className="mb-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">Output</p>
         {p.matchToolWidth ? (
-          <div className="rounded bg-[var(--surface-secondary)] px-2 py-1 text-xs text-muted-foreground">
+          <div className="rounded-xl bg-[var(--surface-secondary)] px-3 py-2 text-xs text-muted-foreground">
             Contour (forced for bit-width slots)
           </div>
         ) : (
@@ -87,11 +91,10 @@ export function TenonForm({ initialParams, mode, nodeId, onPlace, onUpdate }: Te
         )}
       </div>
 
-      {/* Action button */}
       {mode === 'new' && onPlace && (
         <button
           onClick={() => onPlace(p)}
-          className="w-full rounded bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          className="w-full rounded-xl bg-primary px-3 py-2.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
         >
           Place on artboard
         </button>
@@ -99,7 +102,7 @@ export function TenonForm({ initialParams, mode, nodeId, onPlace, onUpdate }: Te
       {mode === 'edit' && onUpdate && (
         <button
           onClick={() => onUpdate(p)}
-          className="w-full rounded bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
+          className="w-full rounded-xl bg-primary px-3 py-2.5 text-xs font-medium text-primary-foreground transition-opacity hover:opacity-90"
         >
           Apply changes
         </button>

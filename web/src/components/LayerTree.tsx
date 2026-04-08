@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Button, ButtonGroup, Dropdown, Input, Label, SearchField } from '@heroui/react'
+import { SearchField } from '@heroui/react'
 import { ChevronDown, ChevronRight, Sparkles } from '@gravity-ui/icons'
 
 import { resolveNodeCncMetadata } from '../lib/cncMetadata'
@@ -18,13 +18,6 @@ const NODE_TYPE_LABEL: Record<string, string> = {
   circle: 'circle',
   line: 'line',
   path: 'path',
-}
-
-interface LayerTreeProps {
-  projectName: string
-  onProjectNameChange: (name: string) => void
-  onImportSvg: () => void
-  onExportProject: () => void
 }
 
 // Build a flat ordered list of all rendered node IDs (depth-first), respecting
@@ -48,12 +41,7 @@ function buildFlatList(
   return result
 }
 
-export function LayerTree({
-  projectName,
-  onProjectNameChange,
-  onImportSvg,
-  onExportProject,
-}: LayerTreeProps) {
+export function LayerTree() {
   const nodesById = useEditorStore((s) => s.nodesById)
   const rootIds = useEditorStore((s) => s.rootIds)
   const selectedIds = useEditorStore((s) => s.selectedIds)
@@ -138,49 +126,8 @@ export function LayerTree({
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <div className="border-b border-border px-4 py-4">
-        <div className="flex items-center">
-          <div className="text-xl font-bold text-foreground">Engrav Studio</div>
-        </div>
-
-        <Input
-          aria-label="Project name"
-          className="mt-4 w-full max-w-none"
-          value={projectName}
-          onChange={(e) => onProjectNameChange(e.target.value)}
-        />
-
-        <ButtonGroup className="mt-4 w-full" variant="secondary">
-          <Button className="flex-1 justify-start text-foreground" onPress={onImportSvg}>
-            <AppIcon icon={Icons.fileUpload} className="h-4 w-4 text-foreground" />
-            Import SVG
-          </Button>
-          <Dropdown>
-            <Button
-              isIconOnly
-              aria-label="More options"
-              className="bg-[var(--surface)] text-foreground hover:bg-[var(--surface-secondary)]"
-            >
-              <ButtonGroup.Separator />
-              <AppIcon icon={Icons.fileArrowDown} className="h-4 w-4 text-foreground" />
-            </Button>
-            <Dropdown.Popover placement="bottom end">
-              <Dropdown.Menu onAction={(key) => {
-                if (key === 'export-project') onExportProject()
-              }}>
-                <Dropdown.Item id="export-project">
-                  <AppIcon icon={Icons.fileArrowDown} className="mr-1.5 inline h-4 w-4 text-foreground" />
-                  Export Project
-                </Dropdown.Item>
-              </Dropdown.Menu>
-            </Dropdown.Popover>
-          </Dropdown>
-        </ButtonGroup>
-      </div>
-
       <div className="border-b border-border px-4 py-3">
         <SearchField value={query} onChange={setQuery} fullWidth>
-          <Label>Layers</Label>
           <SearchField.Group>
             <SearchField.SearchIcon>
               <svg height="16" viewBox="0 0 16 16" width="16" xmlns="http://www.w3.org/2000/svg">
@@ -192,7 +139,7 @@ export function LayerTree({
                 />
               </svg>
             </SearchField.SearchIcon>
-            <SearchField.Input className="w-full" placeholder="Filter art objects and layers" />
+            <SearchField.Input className="w-full" placeholder="Filter art objects" />
             <SearchField.ClearButton>
               <svg height="16" viewBox="0 0 16 16" width="16" xmlns="http://www.w3.org/2000/svg">
                 <path
