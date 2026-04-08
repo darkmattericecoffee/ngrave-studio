@@ -3,6 +3,9 @@ import Konva from 'konva'
 import type { KonvaEventObject } from 'konva/lib/Node'
 import { Circle, Group, Layer, Line, Path, Rect, Stage, Text, Transformer } from 'react-konva'
 
+import PipetteEmptyCursor from './assets/pipette-empty.svg'
+import PipetteFilledCursor from './assets/pipette-filled.svg'
+import PipetteGlyph from './assets/pipette-glyph.svg'
 import { AppIcon, Icons } from './lib/icons'
 import { isTypingTarget } from './lib/domEvents'
 import { MATERIAL_PRESETS, DEFAULT_MATERIAL } from './lib/materialPresets'
@@ -46,6 +49,9 @@ const MAX_ARTBOARD_SIZE = 2000
 const MIN_SCALE = 0.25
 const MAX_SCALE = 4
 const WHEEL_SCALE_BY = 1.02
+const EYEDROPPER_CURSOR_HOTSPOT_X = 3
+const EYEDROPPER_CURSOR_HOTSPOT_Y = 16
+const EYEDROPPER_PICK_FLASH_MS = 140
 
 type NodeLiveTransform = { x: number; y: number; rotation: number; scaleX: number; scaleY: number }
 
@@ -250,6 +256,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const viewport = useEditorStore((state) => state.viewport)
   const pendingImport = useEditorStore((state) => state.ui.pendingImport)
   const eyedropperMode = useEditorStore((state) => state.eyedropperMode)
+  const eyedropperSourceNodeId = useEditorStore((state) => state.eyedropperSourceNodeId)
   const toolDiameter = useEditorStore((state) => state.machiningSettings.toolDiameter)
   const defaultDepthMm = useEditorStore((state) => state.machiningSettings.defaultDepthMm)
   const setViewport = useEditorStore((state) => state.setViewport)
@@ -296,6 +303,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const [isZoomEditing, setIsZoomEditing] = useState(false)
   const [zoomDraft, setZoomDraft] = useState('')
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const [eyedropperCursorFlashFilled, setEyedropperCursorFlashFilled] = useState(false)
   const [transformTick, setTransformTick] = useState(0)
   const zoomInputRef = useRef<HTMLInputElement | null>(null)
   const presetDef = MATERIAL_PRESETS.find((p) => p.id === materialPreset) ?? MATERIAL_PRESETS[0]
@@ -1058,6 +1066,26 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     }
   }, [isZoomEditing])
 
+  useEffect(() => {
+    if (eyedropperMode !== 'off' && !eyedropperSourceNodeId) {
+      setEyedropperCursorFlashFilled(false)
+    }
+  }, [eyedropperMode, eyedropperSourceNodeId])
+
+  useEffect(() => {
+    const flashFilledCursor = () => {
+      setEyedropperCursorFlashFilled(true)
+      window.setTimeout(() => {
+        setEyedropperCursorFlashFilled(false)
+      }, EYEDROPPER_PICK_FLASH_MS)
+    }
+
+    window.addEventListener('editor-eyedropper-pick', flashFilledCursor)
+    return () => {
+      window.removeEventListener('editor-eyedropper-pick', flashFilledCursor)
+    }
+  }, [])
+
   const effectiveInteractionMode = getEffectiveInteractionMode(
     interactionMode,
     directSelectionModifierActive,
@@ -1100,13 +1128,14 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     }
   }
 
+  const showFilledEyedropperCursor = eyedropperSourceNodeId !== null || eyedropperCursorFlashFilled
   const cursor =
     isPanning || panToolActive
       ? (isPanning ? 'grabbing' : 'grab')
       : isSpacePressed
         ? 'grab'
-        : eyedropperMode !== 'off'
-          ? 'crosshair'
+        : eyedropperMode !== 'off' || eyedropperCursorFlashFilled
+          ? `url("${showFilledEyedropperCursor ? PipetteFilledCursor : PipetteEmptyCursor}") ${EYEDROPPER_CURSOR_HOTSPOT_X} ${EYEDROPPER_CURSOR_HOTSPOT_Y}, alias`
           : 'default'
 
   return (
@@ -1202,7 +1231,15 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
               onClick={() => setEyedropperMode(eyedropperMode === 'full' ? 'off' : 'full')}
               title="Pick Styles (⌘I)"
             >
-              <AppIcon icon={Icons.pipette} className="h-5 w-5" />
+              <img
+                src={PipetteGlyph}
+                alt=""
+                aria-hidden="true"
+                className={`h-4 w-4 select-none object-contain [filter:brightness(0)_invert(1)] ${
+                  eyedropperMode !== 'off' ? 'opacity-100' : 'opacity-75'
+                }`}
+                draggable={false}
+              />
             </button>
           </ToolbarTooltip>
 

@@ -282,6 +282,7 @@ export function ShapeRenderer({
     if (eyedropperMode !== 'off') {
       if ('button' in event.evt && event.evt.button !== 0) return
       event.cancelBubble = true
+      window.dispatchEvent(new CustomEvent('editor-eyedropper-pick'))
       applyEyedropperPick(node.id)
       return
     }

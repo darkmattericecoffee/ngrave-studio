@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
-import { Geo } from '@gravity-ui/icons'
-import { Button, Slider } from '@heroui/react'
-import GeoFillIcon from '@gravity-ui/icons/svgs/geo-fill.svg'
+import { Geo, GeoFill } from '@gravity-ui/icons'
+import { Button, Slider, Tabs } from '@heroui/react'
 
 import { resolveNodeCncMetadata } from '../lib/cncMetadata'
 import { depthToColor, isOpenPathNode, normalizeEngraveType } from '../lib/cncVisuals'
@@ -285,25 +284,11 @@ function DepthEditor({
 
       <div className="space-y-1.5">
         <p className="text-xs text-muted-foreground">Part fill</p>
-        <div className="flex gap-1.5">
-          {availableTypes.map((type) => {
-            const isActive = !analysis.isMixedType && analysis.effectiveType === type
-            return (
-              <Button
-                key={type}
-                size="sm"
-                className="flex-1"
-                variant={isActive ? 'primary' : 'secondary'}
-                onPress={() => onTypeChange(isActive ? undefined : type)}
-              >
-                <span className="flex items-center gap-1.5">
-                  <FillModeIcon mode={type} />
-                  <span>{ENGRAVE_LABEL[type]}</span>
-                </span>
-              </Button>
-            )
-          })}
-        </div>
+        <FillModeTabs
+          availableTypes={availableTypes}
+          selectedType={analysis.isMixedType ? null : analysis.effectiveType}
+          onTypeChange={(value) => onTypeChange(value)}
+        />
         {analysis.isMixedType && (
           <p className="text-xs text-muted-foreground/70">Multiple fill types selected</p>
         )}
@@ -368,7 +353,12 @@ function CutDepthGroupsList({
                 {group.partCount} {group.partCount === 1 ? 'part' : 'parts'}
               </p>
             </div>
-            <Button size="sm" variant="secondary" onPress={() => onSelectGroup(group.nodeIds)}>
+            <Button
+              size="sm"
+              variant="outline"
+              className="min-h-7 rounded-full px-3 text-xs"
+              onPress={() => onSelectGroup(group.nodeIds)}
+            >
               Select
             </Button>
           </div>
@@ -385,25 +375,13 @@ function CutDepthGroupsList({
           {/* Part fill */}
           <div className="space-y-1.5">
             <p className="text-xs text-muted-foreground">Part fill</p>
-            <div className="flex gap-1.5">
-              {ENGRAVE_TYPES.map((type) => {
-                const isActive = group.fillMode === type && !group.mixedFill
-                return (
-                  <Button
-                    key={type}
-                    size="sm"
-                    className="flex-1"
-                    variant={isActive ? 'primary' : 'secondary'}
-                    onPress={() => onFillModeChange(group.nodeIds, type)}
-                  >
-                    <span className="flex items-center gap-1.5">
-                      <FillModeIcon mode={type} />
-                      <span>{ENGRAVE_LABEL[type]}</span>
-                    </span>
-                  </Button>
-                )
-              })}
-            </div>
+            <FillModeTabs
+              availableTypes={ENGRAVE_TYPES}
+              selectedType={group.mixedFill ? null : group.fillMode ?? null}
+              onTypeChange={(value) => {
+                if (value) onFillModeChange(group.nodeIds, value)
+              }}
+            />
             {group.mixedFill && (
               <p className="text-xs text-muted-foreground/70">Mixed fill types.</p>
             )}
@@ -442,9 +420,44 @@ function ColorSwatch({ color, className = '' }: { color: string; className?: str
 
 function FillModeIcon({ mode }: { mode: NormalizedEngraveType }) {
   if (mode === 'contour') {
-    return <Geo className="h-4 w-4 shrink-0" aria-hidden="true" />
+    return <Geo className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
   }
-  return <img src={GeoFillIcon} alt="" className="h-4 w-4 shrink-0" aria-hidden="true" />
+  return <GeoFill className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+}
+
+function FillModeTabs({
+  availableTypes,
+  selectedType,
+  onTypeChange,
+}: {
+  availableTypes: NormalizedEngraveType[]
+  selectedType: NormalizedEngraveType | null
+  onTypeChange: (value: EngraveType | undefined) => void
+}) {
+  return (
+    <Tabs
+      className="w-full"
+      selectedKey={selectedType ?? undefined}
+      onSelectionChange={(key) => onTypeChange(String(key) as EngraveType)}
+    >
+      <Tabs.ListContainer className="w-full">
+        <Tabs.List
+          aria-label="Part fill modes"
+          className="w-full rounded-full bg-content2 p-1 *:min-w-0 *:flex-1 *:h-7 *:px-2.5 *:text-xs *:font-medium *:text-white/70 *:data-[selected=true]:text-white"
+        >
+          {availableTypes.map((type) => (
+            <Tabs.Tab key={type} id={type}>
+              <span className="flex items-center justify-center gap-1.5 text-current">
+                <FillModeIcon mode={type} />
+                <span>{ENGRAVE_LABEL[type]}</span>
+              </span>
+              <Tabs.Indicator className="rounded-full bg-primary" />
+            </Tabs.Tab>
+          ))}
+        </Tabs.List>
+      </Tabs.ListContainer>
+    </Tabs>
+  )
 }
 
 function formatCutDepth(depth: number): string {

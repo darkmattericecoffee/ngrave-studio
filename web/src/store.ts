@@ -57,9 +57,10 @@ export interface EditorStore {
   }
   hoveredId: string | null
   eyedropperMode: EyedropperMode
+  eyedropperSourceNodeId: string | null
   setHoveredId: (id: string | null) => void
   setEyedropperMode: (mode: EyedropperMode) => void
-  applyEyedropperPick: (sourceNodeId: string) => void
+  applyEyedropperPick: (clickedNodeId: string) => void
   setInteractionMode: (mode: InteractionMode) => void
   setDirectSelectionModifierActive: (active: boolean) => void
   setFocusGroup: (groupId: string | null) => void
@@ -207,6 +208,43 @@ const initialViewport: ViewportState = {
   scale: 1,
 }
 
+function applyEyedropperToTargets(
+  nodesById: Record<string, CanvasNode>,
+  sourceNode: CanvasNode,
+  targetIds: string[],
+  eyedropperMode: EyedropperMode,
+): Record<string, CanvasNode> {
+  const nextNodes = { ...nodesById }
+  const sourceIsGroup = sourceNode.type === 'group'
+
+  for (const targetId of targetIds) {
+    if (targetId === sourceNode.id) continue
+    const target = nextNodes[targetId]
+    if (!target) continue
+
+    if (eyedropperMode === 'full' && !sourceIsGroup) {
+      const patch: Record<string, unknown> = {}
+      if (sourceNode.fill !== undefined && 'fill' in target) patch.fill = sourceNode.fill
+      if (sourceNode.stroke !== undefined && 'stroke' in target) patch.stroke = sourceNode.stroke
+      if (sourceNode.strokeWidth !== undefined && 'strokeWidth' in target) {
+        patch.strokeWidth = sourceNode.strokeWidth
+      }
+      nextNodes[targetId] = {
+        ...target,
+        ...patch,
+        cncMetadata: sourceNode.cncMetadata ? { ...sourceNode.cncMetadata } : target.cncMetadata,
+      } as CanvasNode
+    } else {
+      nextNodes[targetId] = {
+        ...target,
+        cncMetadata: sourceNode.cncMetadata ? { ...sourceNode.cncMetadata } : target.cncMetadata,
+      } as CanvasNode
+    }
+  }
+
+  return nextNodes
+}
+
 export const useEditorStore = create<EditorStore>((set, get) => ({
   nodesById: initialNodes,
   rootIds: initialRootIds,
@@ -252,56 +290,65 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
   hoveredId: null,
   eyedropperMode: 'off',
+  eyedropperSourceNodeId: null,
   leftPanelTab: 'layers',
   setHoveredId: (id) => set({ hoveredId: id }),
-  setEyedropperMode: (mode) => set({ eyedropperMode: mode }),
-  applyEyedropperPick: (sourceNodeId) => {
-    const { eyedropperMode, selectedIds, nodesById } = get()
+  setEyedropperMode: (mode) => set({
+    eyedropperMode: mode,
+    eyedropperSourceNodeId: null,
+  }),
+  applyEyedropperPick: (clickedNodeId) => {
+    const { eyedropperMode, eyedropperSourceNodeId, selectedIds, nodesById } = get()
     if (eyedropperMode === 'off') return
-    if (selectedIds.length === 0) {
+
+    const clickedNode = nodesById[clickedNodeId]
+    if (!clickedNode) {
       set({ eyedropperMode: 'off' })
       return
     }
 
-    const sourceNode = nodesById[sourceNodeId]
+    if (selectedIds.length > 0) {
+      get().pushHistory()
+      set((state) => ({
+        nodesById: applyEyedropperToTargets(
+          state.nodesById,
+          clickedNode,
+          state.selectedIds,
+          state.eyedropperMode,
+        ),
+        eyedropperMode: 'off',
+        eyedropperSourceNodeId: null,
+      }))
+      return
+    }
+
+    if (!eyedropperSourceNodeId) {
+      set({ eyedropperSourceNodeId: clickedNodeId })
+      return
+    }
+
+    if (eyedropperSourceNodeId === clickedNodeId) {
+      return
+    }
+
+    const sourceNode = nodesById[eyedropperSourceNodeId]
     if (!sourceNode) {
-      set({ eyedropperMode: 'off' })
+      set({ eyedropperSourceNodeId: clickedNodeId })
       return
     }
 
     get().pushHistory()
 
-    set((state) => {
-      const nextNodes = { ...state.nodesById }
-      const sourceIsGroup = sourceNode.type === 'group'
-
-      for (const targetId of state.selectedIds) {
-        if (targetId === sourceNodeId) continue
-        const target = nextNodes[targetId]
-        if (!target) continue
-
-        if (state.eyedropperMode === 'full' && !sourceIsGroup) {
-          const patch: Record<string, unknown> = {}
-          if (sourceNode.fill !== undefined && 'fill' in target) patch.fill = sourceNode.fill
-          if (sourceNode.stroke !== undefined && 'stroke' in target) patch.stroke = sourceNode.stroke
-          if (sourceNode.strokeWidth !== undefined && 'strokeWidth' in target) {
-            patch.strokeWidth = sourceNode.strokeWidth
-          }
-          nextNodes[targetId] = {
-            ...target,
-            ...patch,
-            cncMetadata: sourceNode.cncMetadata ? { ...sourceNode.cncMetadata } : target.cncMetadata,
-          } as CanvasNode
-        } else {
-          nextNodes[targetId] = {
-            ...target,
-            cncMetadata: sourceNode.cncMetadata ? { ...sourceNode.cncMetadata } : target.cncMetadata,
-          } as CanvasNode
-        }
-      }
-
-      return { nodesById: nextNodes, eyedropperMode: 'off' as EyedropperMode }
-    })
+    set((state) => ({
+      nodesById: applyEyedropperToTargets(
+        state.nodesById,
+        sourceNode,
+        [clickedNodeId],
+        state.eyedropperMode,
+      ),
+      eyedropperMode: 'off',
+      eyedropperSourceNodeId: null,
+    }))
   },
   setInteractionMode: (mode) => {
     set({ interactionMode: mode })
