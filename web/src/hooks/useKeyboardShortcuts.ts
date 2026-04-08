@@ -13,6 +13,8 @@ export function useKeyboardShortcuts() {
   const redo = useEditorStore((state) => state.redo)
   const pendingImport = useEditorStore((state) => state.ui.pendingImport)
   const clearPendingImport = useEditorStore((state) => state.clearPendingImport)
+  const eyedropperMode = useEditorStore((state) => state.eyedropperMode)
+  const setEyedropperMode = useEditorStore((state) => state.setEyedropperMode)
   const setDirectSelectionModifierActive = useEditorStore(
     (state) => state.setDirectSelectionModifierActive,
   )
@@ -61,6 +63,14 @@ export function useKeyboardShortcuts() {
               undo()
             }
             return
+          case 'i':
+            event.preventDefault()
+            if (event.shiftKey) {
+              setEyedropperMode(eyedropperMode === 'depth-only' ? 'off' : 'depth-only')
+            } else {
+              setEyedropperMode(eyedropperMode === 'full' ? 'off' : 'full')
+            }
+            return
         }
       }
 
@@ -77,6 +87,9 @@ export function useKeyboardShortcuts() {
             tone: 'info',
             message: `Cancelled placing "${pendingImport.name}".`,
           })
+        } else if (eyedropperMode !== 'off') {
+          event.preventDefault()
+          setEyedropperMode('off')
         } else {
           clearSelection()
         }
@@ -106,11 +119,13 @@ export function useKeyboardShortcuts() {
     clearSelection,
     copySelected,
     deleteSelected,
+    eyedropperMode,
     pasteClipboard,
     pendingImport,
     redo,
     selectAll,
     setDirectSelectionModifierActive,
+    setEyedropperMode,
     setImportStatus,
     undo,
   ])

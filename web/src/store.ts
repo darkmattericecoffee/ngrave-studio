@@ -9,6 +9,7 @@ import type {
   ArtboardState,
   CanvasNode,
   CncMetadata,
+  EyedropperMode,
   GeneratorParams,
   GroupNode,
   ImportStatus,
@@ -55,7 +56,10 @@ export interface EditorStore {
     importStatus: ImportStatus | null
   }
   hoveredId: string | null
+  eyedropperMode: EyedropperMode
   setHoveredId: (id: string | null) => void
+  setEyedropperMode: (mode: EyedropperMode) => void
+  applyEyedropperPick: (sourceNodeId: string) => void
   setInteractionMode: (mode: InteractionMode) => void
   setDirectSelectionModifierActive: (active: boolean) => void
   setFocusGroup: (groupId: string | null) => void
@@ -247,8 +251,58 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     importStatus: null,
   },
   hoveredId: null,
+  eyedropperMode: 'off',
   leftPanelTab: 'layers',
   setHoveredId: (id) => set({ hoveredId: id }),
+  setEyedropperMode: (mode) => set({ eyedropperMode: mode }),
+  applyEyedropperPick: (sourceNodeId) => {
+    const { eyedropperMode, selectedIds, nodesById } = get()
+    if (eyedropperMode === 'off') return
+    if (selectedIds.length === 0) {
+      set({ eyedropperMode: 'off' })
+      return
+    }
+
+    const sourceNode = nodesById[sourceNodeId]
+    if (!sourceNode) {
+      set({ eyedropperMode: 'off' })
+      return
+    }
+
+    get().pushHistory()
+
+    set((state) => {
+      const nextNodes = { ...state.nodesById }
+      const sourceIsGroup = sourceNode.type === 'group'
+
+      for (const targetId of state.selectedIds) {
+        if (targetId === sourceNodeId) continue
+        const target = nextNodes[targetId]
+        if (!target) continue
+
+        if (state.eyedropperMode === 'full' && !sourceIsGroup) {
+          const patch: Record<string, unknown> = {}
+          if (sourceNode.fill !== undefined && 'fill' in target) patch.fill = sourceNode.fill
+          if (sourceNode.stroke !== undefined && 'stroke' in target) patch.stroke = sourceNode.stroke
+          if (sourceNode.strokeWidth !== undefined && 'strokeWidth' in target) {
+            patch.strokeWidth = sourceNode.strokeWidth
+          }
+          nextNodes[targetId] = {
+            ...target,
+            ...patch,
+            cncMetadata: sourceNode.cncMetadata ? { ...sourceNode.cncMetadata } : target.cncMetadata,
+          } as CanvasNode
+        } else {
+          nextNodes[targetId] = {
+            ...target,
+            cncMetadata: sourceNode.cncMetadata ? { ...sourceNode.cncMetadata } : target.cncMetadata,
+          } as CanvasNode
+        }
+      }
+
+      return { nodesById: nextNodes, eyedropperMode: 'off' as EyedropperMode }
+    })
+  },
   setInteractionMode: (mode) => {
     set({ interactionMode: mode })
   },

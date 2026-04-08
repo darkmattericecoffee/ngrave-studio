@@ -26,6 +26,7 @@ import ObjectAlignTopIcon from '@gravity-ui/icons/esm/ObjectAlignTop.js'
 import PictureIcon from '@gravity-ui/icons/esm/Picture.js'
 import PlusIcon from '@gravity-ui/icons/esm/Plus.js'
 import SquareDashedIcon from '@gravity-ui/icons/esm/SquareDashed.js'
+import { Pipette } from 'lucide-react'
 
 export type AppIconComponent = ComponentType<SVGProps<SVGSVGElement>>
 
@@ -69,6 +70,7 @@ export const Icons = {
   minusShape: MinusShape,
   minusShapeFill: MinusShapeFill,
   picture: PictureIcon,
+  pipette: Pipette,
   plus: PlusIcon,
 } satisfies Record<string, AppIconComponent>
 

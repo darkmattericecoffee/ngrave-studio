@@ -192,6 +192,37 @@ const scaleViewportFromAnchor = (
   }
 }
 
+function ToolbarTooltip({
+  label,
+  shortcuts,
+  note,
+  children,
+}: {
+  label: string
+  shortcuts?: string[]
+  note?: string
+  children: React.ReactNode
+}) {
+  return (
+    <div className="group/tt relative">
+      {children}
+      <div className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 hidden min-w-max -translate-x-1/2 flex-col items-center gap-1 rounded-lg border border-white/10 bg-[rgba(19,19,23,0.95)] px-3 py-2 shadow-xl backdrop-blur-xl group-hover/tt:flex">
+        <span className="text-xs font-medium text-white/90">{label}</span>
+        {shortcuts && shortcuts.length > 0 && (
+          <div className="flex items-center gap-1">
+            {shortcuts.map((shortcut) => (
+              <kbd key={shortcut} className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white/70">
+                {shortcut}
+              </kbd>
+            ))}
+          </div>
+        )}
+        {note && <span className="text-[10px] text-white/50">{note}</span>}
+      </div>
+    </div>
+  )
+}
+
 export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_MATERIAL, forceEngravePreview = false }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 })
@@ -218,11 +249,13 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   )
   const viewport = useEditorStore((state) => state.viewport)
   const pendingImport = useEditorStore((state) => state.ui.pendingImport)
+  const eyedropperMode = useEditorStore((state) => state.eyedropperMode)
   const toolDiameter = useEditorStore((state) => state.machiningSettings.toolDiameter)
   const defaultDepthMm = useEditorStore((state) => state.machiningSettings.defaultDepthMm)
   const setViewport = useEditorStore((state) => state.setViewport)
   const resetViewport = useEditorStore((state) => state.resetViewport)
   const setMarquee = useEditorStore((state) => state.setMarquee)
+  const setEyedropperMode = useEditorStore((state) => state.setEyedropperMode)
   const clearSelection = useEditorStore((state) => state.clearSelection)
   const clearFocusGroup = useEditorStore((state) => state.clearFocusGroup)
   const setIsTransforming = useEditorStore((state) => state.setIsTransforming)
@@ -737,6 +770,11 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
       return
     }
 
+    if (eyedropperMode !== 'off') {
+      setEyedropperMode('off')
+      return
+    }
+
     const position = stage.getPointerPosition()
     if (!position) {
       return
@@ -760,7 +798,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
       if (pos) {
         const activeMode = getEffectiveInteractionMode(interactionMode, directSelectionModifierActive)
 
-        if (activeMode === 'direct') {
+        if (activeMode === 'direct' || eyedropperMode !== 'off') {
           // In direct selection mode, sample ALL shapes at cursor position
           // so inner paths aren't occluded by filled closed shapes above them
           const allShapes = stage.getAllIntersections(pos)
@@ -1062,7 +1100,14 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     }
   }
 
-  const cursor = isPanning || panToolActive ? (isPanning ? 'grabbing' : 'grab') : isSpacePressed ? 'grab' : 'default'
+  const cursor =
+    isPanning || panToolActive
+      ? (isPanning ? 'grabbing' : 'grab')
+      : isSpacePressed
+        ? 'grab'
+        : eyedropperMode !== 'off'
+          ? 'crosshair'
+          : 'default'
 
   return (
     <div
@@ -1077,65 +1122,89 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
       <div className="pointer-events-none absolute inset-x-0 bottom-7 z-20 flex justify-center px-6">
         <div className="pointer-events-auto flex items-center gap-2 rounded-[1.75rem] border border-white/10 bg-[rgba(19,19,23,0.9)] px-4 py-3 text-white shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
           {/* Direct selection toggle */}
-          <button
-            type="button"
-            className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${effectiveInteractionMode === 'direct' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-            onClick={() => setInteractionMode(interactionMode === 'direct' ? 'group' : 'direct')}
-            title="Direct selection (D)"
-          >
-            <AppIcon icon={Icons.cursor} className="h-5 w-5" />
-          </button>
+          <ToolbarTooltip label="Direct selection" shortcuts={['D', '⌘ Click']} note="Shift+click to multi-select">
+            <button
+              type="button"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${effectiveInteractionMode === 'direct' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+              onClick={() => setInteractionMode(interactionMode === 'direct' ? 'group' : 'direct')}
+              title="Direct selection (D)"
+            >
+              <AppIcon icon={Icons.cursor} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
 
           {/* Pan tool toggle */}
-          <button
-            type="button"
-            className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${panToolActive ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-            onClick={() => setPanToolActive((v) => !v)}
-            title="Pan (H)"
-          >
-            <AppIcon icon={Icons.hand} className="h-5 w-5" />
-          </button>
+          <ToolbarTooltip label="Pan" shortcuts={['H', 'Space']}>
+            <button
+              type="button"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${panToolActive ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+              onClick={() => setPanToolActive((v) => !v)}
+              title="Pan (H)"
+            >
+              <AppIcon icon={Icons.hand} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
 
           {/* Outlines toggle */}
-          <button
-            type="button"
-            className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showOutlines ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-            onClick={() => setShowOutlines((v) => !v)}
-            title="Depth Lines - show colored depth lines"
-          >
-            <AppIcon icon={showOutlines ? Icons.minusShapeFill : Icons.minusShape} className="h-5 w-5" />
-          </button>
+          <ToolbarTooltip label="Depth Lines">
+            <button
+              type="button"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showOutlines ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+              onClick={() => setShowOutlines((v) => !v)}
+              title="Depth Lines - show colored depth lines"
+            >
+              <AppIcon icon={showOutlines ? Icons.minusShapeFill : Icons.minusShape} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
 
           {/* Engrave preview toggle */}
-          <button
-            type="button"
-            className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showEngravePreview ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-            onClick={() => setShowEngravePreview((v) => !v)}
-            title="Engrave preview — simulates routed pockets on wood"
-          >
-            <AppIcon icon={Icons.engravePreview} className="h-5 w-5" />
-          </button>
+          <ToolbarTooltip label="Engrave Preview">
+            <button
+              type="button"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showEngravePreview ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+              onClick={() => setShowEngravePreview((v) => !v)}
+              title="Engrave preview — simulates routed pockets on wood"
+            >
+              <AppIcon icon={Icons.engravePreview} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
 
           {/* Undo / Redo */}
           <div className="mx-1 h-6 w-px bg-white/10" />
-          <button
-            type="button"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg transition text-white/75 hover:text-white disabled:opacity-25 disabled:cursor-not-allowed"
-            disabled={!canUndo}
-            onClick={() => undo()}
-            title="Undo (⌘Z)"
-          >
-            <AppIcon icon={Icons.undo} className="h-5 w-5" />
-          </button>
-          <button
-            type="button"
-            className="inline-flex h-8 w-8 items-center justify-center rounded-lg transition text-white/75 hover:text-white disabled:opacity-25 disabled:cursor-not-allowed"
-            disabled={!canRedo}
-            onClick={() => redo()}
-            title="Redo (⌘⇧Z)"
-          >
-            <AppIcon icon={Icons.redo} className="h-5 w-5" />
-          </button>
+          <ToolbarTooltip label="Undo" shortcuts={['⌘Z']}>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg transition text-white/75 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+              disabled={!canUndo}
+              onClick={() => undo()}
+              title="Undo (⌘Z)"
+            >
+              <AppIcon icon={Icons.undo} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Redo" shortcuts={['⌘⇧Z']}>
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg transition text-white/75 hover:text-white disabled:cursor-not-allowed disabled:opacity-25"
+              disabled={!canRedo}
+              onClick={() => redo()}
+              title="Redo (⌘⇧Z)"
+            >
+              <AppIcon icon={Icons.redo} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
+          <ToolbarTooltip label="Pick Styles" shortcuts={['⌘I']} note="⌘⇧I for depth only">
+            <button
+              type="button"
+              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${
+                eyedropperMode !== 'off' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'
+              }`}
+              onClick={() => setEyedropperMode(eyedropperMode === 'full' ? 'off' : 'full')}
+              title="Pick Styles (⌘I)"
+            >
+              <AppIcon icon={Icons.pipette} className="h-5 w-5" />
+            </button>
+          </ToolbarTooltip>
 
           {/* Zoom controls */}
           <div className="ml-2 flex items-center gap-3 rounded-[1.2rem] bg-white/[0.05] px-4 py-2">

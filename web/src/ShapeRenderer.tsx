@@ -240,6 +240,8 @@ export function ShapeRenderer({
   const interactionMode = useEditorStore((state) => state.interactionMode)
   const directSelectionModifierActive = useEditorStore((state) => state.directSelectionModifierActive)
   const pendingImport = useEditorStore((state) => state.ui.pendingImport)
+  const eyedropperMode = useEditorStore((state) => state.eyedropperMode)
+  const applyEyedropperPick = useEditorStore((state) => state.applyEyedropperPick)
   const toolDiameter = useEditorStore((state) => state.machiningSettings.toolDiameter)
   const viewportScale = useEditorStore((state) => state.viewport.scale)
   const updateNodeTransform = useEditorStore((state) => state.updateNodeTransform)
@@ -277,6 +279,12 @@ export function ShapeRenderer({
     !(activeInteractionMode === 'direct' && node.type === 'group')
 
   const onPointerDown = (event: KonvaEventObject<MouseEvent | TouchEvent>) => {
+    if (eyedropperMode !== 'off') {
+      if ('button' in event.evt && event.evt.button !== 0) return
+      event.cancelBubble = true
+      applyEyedropperPick(node.id)
+      return
+    }
     if (!listening || interactionBlocked) return
     if ('button' in event.evt && event.evt.button !== 0) return
     if (!isDirectlyInteractive) return
