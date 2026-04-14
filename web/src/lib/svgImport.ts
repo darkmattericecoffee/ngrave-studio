@@ -4,6 +4,7 @@ import type {
   ArtboardState,
   CanvasFillRule,
   CanvasNode,
+  CenterlineMetadata,
   CncMetadata,
   EngraveType,
   GroupNode,
@@ -569,6 +570,32 @@ const readCncMetadata = (element: Element): CncMetadata | undefined => {
   }
 }
 
+const readCenterlineMetadata = (element: Element): CenterlineMetadata | undefined => {
+  const enabledRaw = element.getAttribute('data-centerline-enabled')
+  const scaleAxis = parseNumber(element.getAttribute('data-centerline-scale-axis'))
+  const samples = parseNumber(element.getAttribute('data-centerline-samples'))
+  const edgeTrim = parseNumber(element.getAttribute('data-centerline-edge-trim'))
+  const simplifyTolerance = parseNumber(element.getAttribute('data-centerline-simplify-tolerance'))
+
+  if (
+    enabledRaw == null &&
+    scaleAxis == null &&
+    samples == null &&
+    edgeTrim == null &&
+    simplifyTolerance == null
+  ) {
+    return undefined
+  }
+
+  return {
+    enabled: enabledRaw == null ? true : enabledRaw.trim().toLowerCase() !== 'false',
+    scaleAxis: Math.min(4, Math.max(1, scaleAxis ?? 1.5)),
+    samples: Math.round(Math.min(15, Math.max(3, samples ?? 3))),
+    edgeTrim: Math.min(20, Math.max(0, edgeTrim ?? 1)),
+    simplifyTolerance: Math.min(5, Math.max(0, simplifyTolerance ?? 0.5)),
+  }
+}
+
 const readRenderHint = (element: Element): RenderHint | undefined => {
   const renderKind = element.getAttribute('data-s2g-render-kind')?.trim().toLowerCase()
   if (renderKind !== 'plunge-circle') {
@@ -747,6 +774,7 @@ export function importSvgToScene({
     const opacity = parseOpacity(getStyleValue(element, styleMap, 'opacity', stylesheet))
     const visible = isVisible(element, styleMap, stylesheet)
     const cncMetadata = readCncMetadata(element)
+    const centerlineMetadata = readCenterlineMetadata(element)
     const renderHint = readRenderHint(element)
     nodeIndex += 1
 
@@ -777,6 +805,7 @@ export function importSvgToScene({
         parentId,
         childIds,
         cncMetadata,
+        centerlineMetadata,
         renderHint,
       }
 
@@ -823,6 +852,7 @@ export function importSvgToScene({
         strokeWidth: paint.stroke ? paint.strokeWidth ?? 1 : 0,
         fillRule: paint.fillRule,
         cncMetadata,
+        centerlineMetadata,
         renderHint,
       }
 
@@ -885,6 +915,7 @@ export function importSvgToScene({
         lineCap: tagName === 'line' ? 'round' : undefined,
         lineJoin: closed ? 'round' : undefined,
         cncMetadata,
+        centerlineMetadata,
         renderHint,
       }
 

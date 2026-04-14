@@ -279,6 +279,11 @@ export function LayerTree() {
                           <LayoutCells className="h-3.5 w-3.5" />
                         </span>
                       ) : null}
+                      {node.centerlineMetadata?.enabled ? (
+                        <span title="Centerlines" className="text-[10px] font-semibold text-primary/70">
+                          CL
+                        </span>
+                      ) : null}
                       <span className="min-w-[3rem] text-right text-xs text-muted-foreground">
                         {isGroup ? `${childCount} parts` : NODE_TYPE_LABEL[node.type]}
                       </span>
@@ -469,6 +474,11 @@ function TreeNode({
           {node.gridMetadata ? (
             <span title="Grid / Repeat" className="text-primary/70">
               <LayoutCells className="h-3 w-3" />
+            </span>
+          ) : null}
+          {node.centerlineMetadata?.enabled ? (
+            <span title="Centerlines" className="text-[9px] font-semibold text-primary/70">
+              CL
             </span>
           ) : null}
           <span className="min-w-[2.5rem] text-right text-xs text-muted-foreground">{typeTag}</span>

@@ -4,6 +4,7 @@ import { LayoutCells } from '@gravity-ui/icons'
 
 import { resizeGeneratorToBounds, supportsGeneratorResizeBack } from '../lib/generators'
 import { getNodeSize } from '../lib/nodeDimensions'
+import { generateCenterlineForNode } from '../lib/centerline'
 import { AppIcon, Icons } from '../lib/icons'
 import { useEditorStore } from '../store'
 import type { CanvasNode, GroupNode } from '../types/editor'
@@ -69,14 +70,24 @@ function DesignTabContent() {
   const selectedIds = useEditorStore((s) => s.selectedIds)
   const nodesById = useEditorStore((s) => s.nodesById)
   const artboard = useEditorStore((s) => s.artboard)
+  const toolDiameter = useEditorStore((s) => s.machiningSettings.toolDiameter)
   const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform)
   const updateGeneratorParams = useEditorStore((s) => s.updateGeneratorParams)
   const alignSelectedNodes = useEditorStore((s) => s.alignSelectedNodes)
   const enableGrid = useEditorStore((s) => s.enableGrid)
   const disableGrid = useEditorStore((s) => s.disableGrid)
   const updateGridMetadata = useEditorStore((s) => s.updateGridMetadata)
+  const enableCenterline = useEditorStore((s) => s.enableCenterline)
+  const disableCenterline = useEditorStore((s) => s.disableCenterline)
+  const updateCenterlineMetadata = useEditorStore((s) => s.updateCenterlineMetadata)
 
   const firstNode = selectedIds.length > 0 ? nodesById[selectedIds[0]] : null
+  const canEditCenterlines = Boolean(
+    firstNode &&
+    selectedIds.length === 1 &&
+    firstNode.parentId === null &&
+    (firstNode.type === 'group' || firstNode.type === 'path'),
+  )
 
   // Compute union bounding box (in canvas px = mm) for all selected nodes
   const selectionBounds = useMemo(() => {
@@ -110,6 +121,11 @@ function DesignTabContent() {
     if (!params || !supportsGeneratorResizeBack(params)) return null
     return group
   }, [firstNode, selectedIds.length])
+
+  const centerlineResult = useMemo(() => {
+    if (!firstNode?.centerlineMetadata?.enabled) return null
+    return generateCenterlineForNode(firstNode.id, nodesById, { toolDiameter })
+  }, [firstNode, nodesById, toolDiameter])
 
   return (
     <div className="space-y-5">
@@ -335,6 +351,73 @@ function DesignTabContent() {
             >
               <LayoutCells className="h-4 w-4" />
               Make grid
+            </button>
+          )}
+        </section>
+      )}
+
+      {/* Centerlines — only for single root group/path selection */}
+      {firstNode && canEditCenterlines && (
+        <section className="space-y-4">
+          <SectionHeading title="Centerlines" />
+          {firstNode.centerlineMetadata?.enabled ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap gap-2">
+                <NumberPill
+                  label="Scale"
+                  value={round2(firstNode.centerlineMetadata.scaleAxis)}
+                  unit=""
+                  onChange={(v) => {
+                    if (v === null) return
+                    updateCenterlineMetadata(firstNode.id, { scaleAxis: v })
+                  }}
+                />
+                <NumberPill
+                  label="Samples"
+                  value={firstNode.centerlineMetadata.samples}
+                  unit=""
+                  onChange={(v) => {
+                    if (v === null) return
+                    updateCenterlineMetadata(firstNode.id, { samples: Math.round(v) })
+                  }}
+                />
+                <NumberPill
+                  label="Trim"
+                  value={round2(firstNode.centerlineMetadata.edgeTrim)}
+                  unit="R"
+                  onChange={(v) => {
+                    if (v === null) return
+                    updateCenterlineMetadata(firstNode.id, { edgeTrim: v })
+                  }}
+                />
+                <NumberPill
+                  label="Simplify"
+                  value={round2(firstNode.centerlineMetadata.simplifyTolerance)}
+                  unit="mm"
+                  onChange={(v) => {
+                    if (v === null) return
+                    updateCenterlineMetadata(firstNode.id, { simplifyTolerance: v })
+                  }}
+                />
+              </div>
+              {centerlineResult ? (
+                <p className={`text-xs ${centerlineResult.error ? 'text-destructive' : 'text-muted-foreground'}`}>
+                  {centerlineResult.error ?? `${centerlineResult.branchCount} centerline branch${centerlineResult.branchCount === 1 ? '' : 'es'} generated (${centerlineResult.segmentCount} curve segment${centerlineResult.segmentCount === 1 ? '' : 's'}).`}
+                </p>
+              ) : null}
+              <button
+                className="w-full rounded-md border border-border px-3 py-2 text-xs text-destructive hover:bg-content1"
+                onClick={() => disableCenterline(firstNode.id)}
+              >
+                Remove centerlines
+              </button>
+            </div>
+          ) : (
+            <button
+              className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-content1 px-3 py-2 text-sm text-foreground hover:bg-content2"
+              onClick={() => enableCenterline(firstNode.id)}
+            >
+              Create Centerlines
             </button>
           )}
         </section>

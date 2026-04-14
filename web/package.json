@@ -18,6 +18,7 @@
     "@svg2gcode/bridge": "file:../bridge",
     "@types/paper": "^0.12.3",
     "clipper-lib": "^6.4.2",
+    "flo-mat": "^3.0.3",
     "konva": "^10.2.3",
     "lucide-react": "^1.7.0",
     "makerjs": "^0.19.2",

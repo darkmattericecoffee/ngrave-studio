@@ -21,6 +21,7 @@ import { resizeGeneratorToBounds, supportsGeneratorResizeBack } from './lib/gene
 import { getNodeSize } from './lib/nodeDimensions'
 import { getBoundsForNodes, getGuides, getLineGuideStops } from './lib/objectSnapping'
 import { getNodeTransformPatch } from './lib/transformUtils'
+import { generateCenterlineForNode } from './lib/centerline'
 import { EngravePreviewStack, ShapeRenderer } from './ShapeRenderer'
 import { useCanvasState } from './hooks/useCanvasState'
 import { useSelection } from './hooks/useSelection'
@@ -127,6 +128,46 @@ function renderOutlineNodeWithAncestors(
   }
 
   return renderChain(chain)
+}
+
+function renderCenterlineOverlayNode(
+  nodeId: string,
+  nodesById: Record<string, CanvasNode>,
+  live: Map<string, NodeLiveTransform>,
+  toolDiameter: number,
+): React.ReactElement | null {
+  const node = nodesById[nodeId]
+  if (!node || !node.visible) return null
+
+  const t = getEffectiveTransform(node, live)
+
+  if (node.centerlineMetadata?.enabled) {
+    const result = generateCenterlineForNode(nodeId, nodesById, { toolDiameter })
+    if (!result.pathData || result.error) return null
+
+    return (
+      <Group key={`centerline-${nodeId}`} {...t} listening={false}>
+        <Path
+          data={result.pathData}
+          fill=""
+          stroke="#ff2bd6"
+          strokeWidth={1.5}
+          strokeScaleEnabled={false}
+          lineCap="round"
+          lineJoin="round"
+          listening={false}
+        />
+      </Group>
+    )
+  }
+
+  if (node.type !== 'group') return null
+
+  return (
+    <Group key={`centerline-${nodeId}`} {...t} listening={false}>
+      {(node as GroupNode).childIds.map((childId) => renderCenterlineOverlayNode(childId, nodesById, live, toolDiameter))}
+    </Group>
+  )
 }
 
 const isEmptyCanvasTarget = (target: Konva.Node): boolean => {
@@ -1564,6 +1605,8 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                 }
                 return <React.Fragment key={nodeId}>{copies}</React.Fragment>
               })}
+
+            {rootIds.map((nodeId) => renderCenterlineOverlayNode(nodeId, nodesById, liveTransforms, toolDiameter))}
 
             {/* Grid gap handles for selected grid nodes */}
             {selectedIds.map((nodeId) => {

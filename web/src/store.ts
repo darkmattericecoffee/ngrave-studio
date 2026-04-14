@@ -8,6 +8,7 @@ import { importSvgToScene } from './lib/svgImport'
 import type {
   ArtboardState,
   CanvasNode,
+  CenterlineMetadata,
   CncMetadata,
   EyedropperMode,
   GeneratorParams,
@@ -28,6 +29,7 @@ import type { CameraType, PreviewState, ToolpathGroup, ViewMode } from './types/
 import { DEFAULT_MATERIAL } from './lib/materialPresets'
 import type { MaterialPreset } from './lib/materialPresets'
 import { getAutoImportPlacement } from './lib/importPlacement'
+import { DEFAULT_CENTERLINE_METADATA, normalizeCenterlineMetadata } from './lib/centerline'
 
 type HistorySnapshot = {
   nodesById: Record<string, CanvasNode>
@@ -118,6 +120,11 @@ export interface EditorStore {
   enableGrid: (nodeId: string) => void
   disableGrid: (nodeId: string) => void
   updateGridMetadata: (nodeId: string, patch: Partial<GridMetadata>) => void
+
+  // Centerlines
+  enableCenterline: (nodeId: string) => void
+  disableCenterline: (nodeId: string) => void
+  updateCenterlineMetadata: (nodeId: string, patch: Partial<CenterlineMetadata>) => void
 
   // Preview state
   preview: PreviewState
@@ -1031,7 +1038,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((state) => {
       const node = state.nodesById[nodeId]
       if (!node) return {}
-      const { gridMetadata: _g, ...rest } = node as CanvasNode & { gridMetadata?: GridMetadata }
+      const rest = { ...node } as CanvasNode & { gridMetadata?: GridMetadata }
+      delete rest.gridMetadata
       return { nodesById: { ...state.nodesById, [nodeId]: rest as CanvasNode } }
     })
   },
@@ -1044,6 +1052,60 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         nodesById: {
           ...state.nodesById,
           [nodeId]: { ...node, gridMetadata: { ...node.gridMetadata, ...patch } },
+        },
+      }
+    })
+  },
+
+  // Centerlines
+  enableCenterline: (nodeId) => {
+    get().pushHistory()
+    set((state) => {
+      const node = state.nodesById[nodeId]
+      if (!node) return {}
+      return {
+        nodesById: {
+          ...state.nodesById,
+          [nodeId]: {
+            ...node,
+            centerlineMetadata: normalizeCenterlineMetadata({
+              ...DEFAULT_CENTERLINE_METADATA,
+              ...node.centerlineMetadata,
+              enabled: true,
+            }),
+          } as CanvasNode,
+        },
+      }
+    })
+  },
+
+  disableCenterline: (nodeId) => {
+    get().pushHistory()
+    set((state) => {
+      const node = state.nodesById[nodeId]
+      if (!node) return {}
+      const rest = { ...node } as CanvasNode & {
+        centerlineMetadata?: CenterlineMetadata
+      }
+      delete rest.centerlineMetadata
+      return { nodesById: { ...state.nodesById, [nodeId]: rest as CanvasNode } }
+    })
+  },
+
+  updateCenterlineMetadata: (nodeId, patch) => {
+    set((state) => {
+      const node = state.nodesById[nodeId]
+      if (!node || !node.centerlineMetadata) return {}
+      return {
+        nodesById: {
+          ...state.nodesById,
+          [nodeId]: {
+            ...node,
+            centerlineMetadata: normalizeCenterlineMetadata({
+              ...node.centerlineMetadata,
+              ...patch,
+            }),
+          } as CanvasNode,
         },
       }
     })

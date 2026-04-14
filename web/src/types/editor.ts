@@ -54,6 +54,14 @@ export interface CncMetadata {
   engraveType?: EngraveType
 }
 
+export interface CenterlineMetadata {
+  enabled: boolean
+  scaleAxis: number
+  samples: number
+  edgeTrim: number
+  simplifyTolerance: number
+}
+
 export interface PlungeCircleRenderHint {
   kind: 'plungeCircle'
   diameter: number
@@ -80,6 +88,7 @@ export interface CanvasNodeBase {
   cncMetadata?: CncMetadata
   renderHint?: RenderHint
   gridMetadata?: GridMetadata
+  centerlineMetadata?: CenterlineMetadata
 }
 
 // ---------- Generator types ----------

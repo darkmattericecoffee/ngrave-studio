@@ -63,6 +63,18 @@ function cncDataAttrs(node: CanvasNode): string {
   return out
 }
 
+function centerlineDataAttrs(node: CanvasNode): string {
+  const meta = node.centerlineMetadata
+  if (!meta) return ''
+  return (
+    attr('data-centerline-enabled', meta.enabled ? 'true' : 'false') +
+    attr('data-centerline-scale-axis', meta.scaleAxis) +
+    attr('data-centerline-samples', meta.samples) +
+    attr('data-centerline-edge-trim', meta.edgeTrim) +
+    attr('data-centerline-simplify-tolerance', meta.simplifyTolerance)
+  )
+}
+
 function renderHintAttrs(node: CanvasNode): string {
   const renderHint = node.renderHint
   if (!renderHint) return ''
@@ -97,7 +109,7 @@ function serializeGroup(
     .filter(Boolean)
     .join('\n')
 
-  return `${indent}<g${transform}${opacityAttr}>\n${children}\n${indent}</g>`
+  return `${indent}<g${transform}${opacityAttr}${centerlineDataAttrs(node)}>\n${children}\n${indent}</g>`
 }
 
 function serializeRect(node: RectNode, indent: string): string {
@@ -115,6 +127,7 @@ function serializeRect(node: RectNode, indent: string): string {
     optionalAttr('opacity', node.opacity) +
     (transform || '') +
     cncDataAttrs(node) +
+    centerlineDataAttrs(node) +
     renderHintAttrs(node) +
     ' />'
   )
@@ -137,6 +150,7 @@ function serializeCircle(node: CircleNode, indent: string): string {
       attr('stroke-width', node.strokeWidth) +
       optionalAttr('opacity', node.opacity) +
       cncDataAttrs(node) +
+      centerlineDataAttrs(node) +
       renderHintAttrs(node) +
       ` />\n${indent}</g>`
     )
@@ -152,6 +166,7 @@ function serializeCircle(node: CircleNode, indent: string): string {
     attr('stroke-width', node.strokeWidth) +
     optionalAttr('opacity', node.opacity) +
     cncDataAttrs(node) +
+    centerlineDataAttrs(node) +
     renderHintAttrs(node) +
     ' />'
   )
@@ -179,6 +194,7 @@ function serializeLine(node: LineNode, indent: string): string {
     optionalAttr('opacity', node.opacity) +
     (transform || '') +
     cncDataAttrs(node) +
+    centerlineDataAttrs(node) +
     renderHintAttrs(node) +
     ' />'
   )
@@ -196,6 +212,7 @@ function serializePath(node: PathNode, indent: string): string {
     optionalAttr('opacity', node.opacity) +
     (transform || '') +
     cncDataAttrs(node) +
+    centerlineDataAttrs(node) +
     renderHintAttrs(node) +
     ' />'
   )

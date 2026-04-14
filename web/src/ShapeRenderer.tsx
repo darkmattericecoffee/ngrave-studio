@@ -305,7 +305,8 @@ export function ShapeRenderer({
   )
   const effectiveRenderMode = getFocusRenderMode(nodeId, effectiveFocusGroupId, nodesById)
   const isDimmed = parentDimmed || effectiveRenderMode === 'dimmed'
-  const opacity = hitboxOnly ? 0 : (isDimmed ? node.opacity * 0.22 : node.opacity)
+  const centerlineOpacity = node.centerlineMetadata?.enabled ? 0.2 : 1
+  const opacity = hitboxOnly ? 0 : (isDimmed ? node.opacity * 0.22 : node.opacity) * centerlineOpacity
   const resolvedSelectionTarget = resolveSelectionTarget(
     node.id,
     nodesById,

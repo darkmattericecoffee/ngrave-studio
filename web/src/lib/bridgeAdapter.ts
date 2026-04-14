@@ -16,6 +16,7 @@ import type {
   MachiningSettings,
 } from "../types/editor"
 import { resolveNodeCncMetadata } from "./cncMetadata"
+import { buildCenterlineExportNodes, subtreeHasActiveCenterline } from "./centerline"
 import { getSubtreeIds, isGroupNode } from "./editorTree"
 import { getNodeSize } from "./nodeDimensions"
 import { exportToSVG } from "./svgExport"
@@ -46,13 +47,14 @@ export async function editorStateToArtObjects(
     const rootNode = nodesById[rootId]
     if (!rootNode || !rootNode.visible) continue
 
-    const svgText = getSvgTextForNode(rootNode, rootId, nodesById, artboard)
-    if (!svgText) continue
+    const exportInfo = getSvgTextForNode(rootNode, rootId, nodesById, artboard, machiningSettings)
+    if (!exportInfo) continue
 
-    const preparedSvg = await prepareSvgDocument(svgText)
+    const preparedSvg = await prepareSvgDocument(exportInfo.svgText)
 
     const defaultEngraveType = resolveDefaultEngraveType(rootNode)
     const nodeSize = getNodeSize(rootNode, nodesById)
+    const usesGeneratedCenterlineSvg = exportInfo.usesGeneratedCenterlineSvg
 
     // Expand grid nodes into N×M individual art objects
     const grid = rootNode.gridMetadata
@@ -87,8 +89,8 @@ export async function editorStateToArtObjects(
         // Fix: override svgMetrics so that width/height match the actual path coordinate
         // extents (= baseWidth/baseHeight, which equal the mm dimensions since generator
         // path coordinates are in mm and scaleX is always 1 after parametric resize).
-        const hasOriginalSvg = isGroupNode(rootNode) && Boolean((rootNode as GroupNode).originalSvg)
-        if (!hasOriginalSvg && nodeSize.baseWidth > 0 && nodeSize.baseHeight > 0) {
+        const hasOriginalSvg = isGroupNode(rootNode) && Boolean((rootNode as GroupNode).originalSvg) && !usesGeneratedCenterlineSvg
+        if ((usesGeneratedCenterlineSvg || !hasOriginalSvg) && nodeSize.baseWidth > 0 && nodeSize.baseHeight > 0) {
           artObject.svgMetrics = {
             x: 0,
             y: 0,
@@ -100,7 +102,12 @@ export async function editorStateToArtObjects(
           }
         }
 
-        applyEditorCncMetadata(artObject, rootNode, nodesById, machiningSettings)
+        applyEditorCncMetadata(
+          artObject,
+          exportInfo.metadataRootNode,
+          exportInfo.metadataNodesById,
+          machiningSettings,
+        )
         artObjects.push(artObject)
       }
     }
@@ -153,16 +160,50 @@ export async function prepareGenerationInputs(
 
 // ─── Internal helpers ──────────────────────────────────────────────────────────
 
+interface SvgTextForNode {
+  svgText: string
+  metadataRootNode: CanvasNode
+  metadataNodesById: Record<string, CanvasNode>
+  usesGeneratedCenterlineSvg: boolean
+}
+
 function getSvgTextForNode(
   node: CanvasNode,
   nodeId: string,
   nodesById: Record<string, CanvasNode>,
   artboard: ArtboardState,
-): string | null {
+  machiningSettings: MachiningSettings,
+): SvgTextForNode | null {
+  if (subtreeHasActiveCenterline(node, nodesById)) {
+    const exportNodes = buildCenterlineExportNodes(nodeId, nodesById, {
+      toolDiameter: machiningSettings.toolDiameter,
+    })
+    const exportRoot = exportNodes.nodesById[nodeId]
+    if (exportRoot) {
+      exportNodes.nodesById[nodeId] = { ...exportRoot, x: 0, y: 0 } as CanvasNode
+    }
+
+    return {
+      svgText: exportToSVG(exportNodes.nodesById, [nodeId], {
+        ...artboard,
+        x: 0,
+        y: 0,
+      }),
+      metadataRootNode: exportNodes.nodesById[nodeId] ?? exportNodes.rootNode,
+      metadataNodesById: exportNodes.nodesById,
+      usesGeneratedCenterlineSvg: true,
+    }
+  }
+
   // Prefer the stored original SVG from import (but not for generator groups —
   // those need per-child export so each shape becomes a separate operation)
   if (isGroupNode(node) && node.originalSvg && !(node as GroupNode).generatorMetadata) {
-    return node.originalSvg
+    return {
+      svgText: node.originalSvg,
+      metadataRootNode: node,
+      metadataNodesById: nodesById,
+      usesGeneratedCenterlineSvg: false,
+    }
   }
 
   // Fallback: export this single node as SVG
@@ -178,11 +219,19 @@ function getSvgTextForNode(
     }
   }
 
-  return exportToSVG(subtreeNodes, [nodeId], {
-    ...artboard,
-    x: 0,
-    y: 0,
-  })
+  const metadataRootNode = subtreeNodes[nodeId]
+  if (!metadataRootNode) return null
+
+  return {
+    svgText: exportToSVG(subtreeNodes, [nodeId], {
+      ...artboard,
+      x: 0,
+      y: 0,
+    }),
+    metadataRootNode,
+    metadataNodesById: subtreeNodes,
+    usesGeneratedCenterlineSvg: false,
+  }
 }
 
 function resolveDefaultEngraveType(node: CanvasNode): BridgeEngraveType {
