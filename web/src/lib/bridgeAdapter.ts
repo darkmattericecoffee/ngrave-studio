@@ -86,16 +86,24 @@ export async function editorStateToArtObjects(
         // parseSvgDocumentMetrics then sets svgMetrics.width=600 instead of the shape's
         // actual coordinate width (~100mm), causing composeArtObjectsSvg to compute
         // scaleX = widthMm / 600 ≈ 0.17 — squashing the shape and corrupting its position.
-        // Fix: override svgMetrics so that width/height match the actual path coordinate
-        // extents (= baseWidth/baseHeight, which equal the mm dimensions since generator
-        // path coordinates are in mm and scaleX is always 1 after parametric resize).
+        //
+        // Fix: override svgMetrics so width/height match the SVG content's *post-transform*
+        // extent in user units. exportToSVG wraps each node with
+        // `transform="translate(x y) scale(sx sy)"` around the base path data, so the
+        // content span in the SVG is `baseWidth * |scaleX|` — i.e. nodeSize.width. Using
+        // nodeSize.baseWidth here double-scales shapes whose wrapper carries scaleX != 1
+        // (e.g. centerline wrappers, which inherit the source node's scale), because the
+        // bridge then computes scaleX_bridge = widthMm / baseWidth = |scaleX| on top of
+        // the transform that's already baked into the SVG. Generators stay at scaleX=1
+        // (parametric resize rewrites the underlying data), so for them nodeSize.width ==
+        // nodeSize.baseWidth and this change is a no-op.
         const hasOriginalSvg = isGroupNode(rootNode) && Boolean((rootNode as GroupNode).originalSvg) && !usesGeneratedCenterlineSvg
-        if ((usesGeneratedCenterlineSvg || !hasOriginalSvg) && nodeSize.baseWidth > 0 && nodeSize.baseHeight > 0) {
+        if ((usesGeneratedCenterlineSvg || !hasOriginalSvg) && nodeSize.width > 0 && nodeSize.height > 0) {
           artObject.svgMetrics = {
             x: 0,
             y: 0,
-            width: nodeSize.baseWidth,
-            height: nodeSize.baseHeight,
+            width: nodeSize.width,
+            height: nodeSize.height,
             widthMm: nodeSize.width,
             heightMm: nodeSize.height,
             aspectRatio: nodeSize.width / nodeSize.height,

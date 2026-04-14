@@ -524,6 +524,27 @@ function CenterlinesEnabledPanel({
         </div>
       </div>
 
+      {/* Trim slider */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">Trim</p>
+          <span className="text-xs text-foreground">
+            {round2(meta.edgeTrim)}
+            <span className="ml-1 text-muted-foreground">R</span>
+          </span>
+        </div>
+        <input
+          type="range" min={0} max={5} step={0.1}
+          value={meta.edgeTrim}
+          disabled={isStreaming}
+          className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          onChange={(e) => onUpdate({ edgeTrim: Number(e.target.value) })}
+        />
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>None</span><span>Trim ends</span>
+        </div>
+      </div>
+
       {/* Simplify slider */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
