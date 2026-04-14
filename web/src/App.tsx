@@ -15,13 +15,15 @@ import { useGcodeGeneration } from './hooks/useGcodeGeneration'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { AppIcon, Icons } from './lib/icons'
 import { importSvgToScene } from './lib/svgImport'
-import { exportProjectSVG } from './lib/svgExport'
+import { exportProjectSVG, exportToSVG } from './lib/svgExport'
+import { buildCenterlineExportNodes, subtreeHasActiveCenterline } from './lib/centerline'
 import { DEFAULT_MATERIAL, MATERIAL_PRESETS } from './lib/materialPresets'
 import type { MaterialPreset } from './lib/materialPresets'
 import { getAutoImportPlacement } from './lib/importPlacement'
 import { useEditorStore } from './store'
 import { insertTabs } from './lib/gcodeTabInsertion'
 import type { ViewMode } from './types/preview'
+import type { CanvasNode } from './types/editor'
 
 type InspectorTab = 'design' | 'material'
 
@@ -72,6 +74,50 @@ function App() {
     anchor.download = `${projectName || 'project'}.svg`
     anchor.click()
     URL.revokeObjectURL(url)
+  }
+
+  const handleCenterlineExport = () => {
+    // Build a node tree where each shape with an active centerline is
+    // replaced by a path containing only its centerline geometry, then
+    // serialize to a minimal SVG ready for pasting into an LLM.
+    console.log('[centerline-export] start', { rootIds, nodeCount: Object.keys(nodesById).length })
+    try {
+      let mergedNodes: Record<string, CanvasNode> = {}
+      const exportedRoots: string[] = []
+      for (const rootId of rootIds) {
+        const root = nodesById[rootId]
+        if (!root || !root.visible) {
+          console.log('[centerline-export] skip root (missing/invisible)', rootId)
+          continue
+        }
+        const hasCenter = subtreeHasActiveCenterline(root, nodesById)
+        console.log('[centerline-export] root', rootId, 'hasActiveCenterline:', hasCenter)
+        if (!hasCenter) continue
+        const { nodesById: perRoot } = buildCenterlineExportNodes(rootId, nodesById)
+        mergedNodes = { ...mergedNodes, ...perRoot }
+        exportedRoots.push(rootId)
+      }
+      console.log('[centerline-export] exportedRoots:', exportedRoots.length)
+      if (exportedRoots.length === 0) {
+        setImportStatus({
+          tone: 'error',
+          message: 'Enable centerline on at least one shape before exporting.',
+        })
+        return
+      }
+      const svgString = exportToSVG(mergedNodes, exportedRoots, artboard)
+      const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `${projectName || 'project'}-centerlines.svg`
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Centerline export failed unexpectedly.'
+      setImportStatus({ tone: 'error', message })
+    }
   }
 
   const processSvgFile = async (file: File, autoPlace = false) => {
@@ -276,11 +322,17 @@ function App() {
                         </Button>
                         <Dropdown.Popover placement="bottom end">
                           <Dropdown.Menu onAction={(key) => {
+                            console.log('[export-menu] onAction', key)
                             if (key === 'export-project') handleProjectExport()
+                            else if (key === 'export-centerlines') handleCenterlineExport()
                           }}>
                             <Dropdown.Item id="export-project">
                               <AppIcon icon={Icons.fileArrowDown} className="mr-1.5 inline h-4 w-4 text-foreground" />
                               Export Project
+                            </Dropdown.Item>
+                            <Dropdown.Item id="export-centerlines">
+                              <AppIcon icon={Icons.fileArrowDown} className="mr-1.5 inline h-4 w-4 text-foreground" />
+                              Export Centerlines SVG
                             </Dropdown.Item>
                           </Dropdown.Menu>
                         </Dropdown.Popover>

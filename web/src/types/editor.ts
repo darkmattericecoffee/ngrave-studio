@@ -60,6 +60,9 @@ export interface CenterlineMetadata {
   samples: number
   edgeTrim: number
   simplifyTolerance: number
+  forceRaster?: boolean
+  /** AI-smoothed override for the generated pathData — set by the AI Smooth action */
+  aiSmoothedPathData?: string
 }
 
 export interface PlungeCircleRenderHint {

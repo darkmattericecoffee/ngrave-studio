@@ -135,6 +135,7 @@ function renderCenterlineOverlayNode(
   nodesById: Record<string, CanvasNode>,
   live: Map<string, NodeLiveTransform>,
   toolDiameter: number,
+  centerlinePathRefs: Map<string, Konva.Path>,
 ): React.ReactElement | null {
   const node = nodesById[nodeId]
   if (!node || !node.visible) return null
@@ -142,13 +143,24 @@ function renderCenterlineOverlayNode(
   const t = getEffectiveTransform(node, live)
 
   if (node.centerlineMetadata?.enabled) {
-    const result = generateCenterlineForNode(nodeId, nodesById, { toolDiameter })
-    if (!result.pathData || result.error) return null
+    // Prefer AI-smoothed override when present; fall back to generated path
+    const pathData =
+      node.centerlineMetadata.aiSmoothedPathData ??
+      (() => {
+        const result = generateCenterlineForNode(nodeId, nodesById, { toolDiameter })
+        return result.error ? null : result.pathData
+      })()
+
+    if (!pathData) return null
 
     return (
       <Group key={`centerline-${nodeId}`} {...t} listening={false}>
         <Path
-          data={result.pathData}
+          ref={(instance) => {
+            if (instance) centerlinePathRefs.set(nodeId, instance)
+            else centerlinePathRefs.delete(nodeId)
+          }}
+          data={pathData}
           fill=""
           stroke="#ff2bd6"
           strokeWidth={1.5}
@@ -165,7 +177,9 @@ function renderCenterlineOverlayNode(
 
   return (
     <Group key={`centerline-${nodeId}`} {...t} listening={false}>
-      {(node as GroupNode).childIds.map((childId) => renderCenterlineOverlayNode(childId, nodesById, live, toolDiameter))}
+      {(node as GroupNode).childIds.map((childId) =>
+        renderCenterlineOverlayNode(childId, nodesById, live, toolDiameter, centerlinePathRefs),
+      )}
     </Group>
   )
 }
@@ -321,6 +335,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const canRedo = useEditorStore((state) => state.history.future.length > 0)
   const placePendingImport = useEditorStore((state) => state.placePendingImport)
   const setInteractionMode = useEditorStore((state) => state.setInteractionMode)
+  const aiSmoothStreamingIds = useEditorStore((state) => state.aiSmoothStreamingIds)
   const { getMarqueeCandidateIds, selectMany, selectStage, selectableIds } = useSelection()
   const stageRef = useRef<Konva.Stage | null>(null)
   const artboardRef = useRef<Konva.Rect | null>(null)
@@ -328,6 +343,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const transformerRef = useRef<Konva.Transformer | null>(null)
   const artboardTargetRef = useRef<Konva.Rect | null>(null)
   const nodeRefs = useRef(new Map<string, Konva.Node>())
+  const centerlinePathRefs = useRef(new Map<string, Konva.Path>())
   const dragStartPositions = useRef<Record<string, { x: number; y: number }>>({})
   const gapDragRef = useRef<
     | { kind: 'grid'; startPointerX: number; startPointerY: number; startGap: number; axis: 'col' | 'row'; nodeId: string }
@@ -414,6 +430,46 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
 
     return () => window.cancelAnimationFrame(frameId)
   }, [getMarqueeHitHighlights, marquee])
+
+  // Breathing animation on centerline overlay paths while AI is streaming
+  useEffect(() => {
+    if (aiSmoothStreamingIds.length === 0) return
+
+    const savedOpacities = new Map<string, number>()
+    for (const id of aiSmoothStreamingIds) {
+      const p = centerlinePathRefs.current.get(id)
+      if (p) savedOpacities.set(id, p.opacity())
+    }
+
+    const startTime = performance.now()
+    let rafId = 0
+
+    const animate = () => {
+      const elapsed = performance.now() - startTime
+      const alpha = 0.3 + 0.7 * Math.abs(Math.sin(elapsed * 0.0025))
+      for (const id of aiSmoothStreamingIds) {
+        const p = centerlinePathRefs.current.get(id)
+        if (p) {
+          p.opacity(alpha)
+          p.getLayer()?.batchDraw()
+        }
+      }
+      rafId = requestAnimationFrame(animate)
+    }
+
+    rafId = requestAnimationFrame(animate)
+
+    return () => {
+      cancelAnimationFrame(rafId)
+      for (const id of aiSmoothStreamingIds) {
+        const p = centerlinePathRefs.current.get(id)
+        if (p) {
+          p.opacity(savedOpacities.get(id) ?? 1)
+          p.getLayer()?.batchDraw()
+        }
+      }
+    }
+  }, [aiSmoothStreamingIds])
 
   const queuePanClickSuppressionReset = () => {
     if (panResetTimeoutRef.current !== null) {
@@ -1606,7 +1662,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                 return <React.Fragment key={nodeId}>{copies}</React.Fragment>
               })}
 
-            {rootIds.map((nodeId) => renderCenterlineOverlayNode(nodeId, nodesById, liveTransforms, toolDiameter))}
+            {rootIds.map((nodeId) => renderCenterlineOverlayNode(nodeId, nodesById, liveTransforms, toolDiameter, centerlinePathRefs.current))}
 
             {/* Grid gap handles for selected grid nodes */}
             {selectedIds.map((nodeId) => {

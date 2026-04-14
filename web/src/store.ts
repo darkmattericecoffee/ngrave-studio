@@ -125,6 +125,9 @@ export interface EditorStore {
   enableCenterline: (nodeId: string) => void
   disableCenterline: (nodeId: string) => void
   updateCenterlineMetadata: (nodeId: string, patch: Partial<CenterlineMetadata>) => void
+  /** Node IDs whose centerline overlay is currently being AI-streamed (drives canvas breathing animation) */
+  aiSmoothStreamingIds: string[]
+  setAiSmoothStreamingIds: (ids: string[]) => void
 
   // Preview state
   preview: PreviewState
@@ -1110,6 +1113,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       }
     })
   },
+
+  aiSmoothStreamingIds: [],
+  setAiSmoothStreamingIds: (ids) => set({ aiSmoothStreamingIds: ids }),
 
   // Preview state
   preview: {

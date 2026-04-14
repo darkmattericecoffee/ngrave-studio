@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { Button, ButtonGroup, Tabs } from '@heroui/react'
 import { LayoutCells } from '@gravity-ui/icons'
 
@@ -7,10 +7,16 @@ import { getNodeSize } from '../lib/nodeDimensions'
 import { generateCenterlineForNode } from '../lib/centerline'
 import { AppIcon, Icons } from '../lib/icons'
 import { useEditorStore } from '../store'
-import type { CanvasNode, GroupNode } from '../types/editor'
+import type { CanvasNode, CenterlineMetadata, GroupNode } from '../types/editor'
 import type { MaterialPreset } from '../lib/materialPresets'
 import { MaterialTabContent, PreviewTabContent } from './MaterialTabContent'
 import { CutDepthEditor } from './CutDepthEditor'
+import {
+  OPENROUTER_API_KEY_STORAGE,
+  buildSvgForSmoothing,
+  extractPathDataFromSvg,
+  streamAiSmooth,
+} from '../lib/aiSmooth'
 
 type InspectorTab = 'design' | 'material'
 
@@ -361,57 +367,13 @@ function DesignTabContent() {
         <section className="space-y-4">
           <SectionHeading title="Centerlines" />
           {firstNode.centerlineMetadata?.enabled ? (
-            <div className="space-y-3">
-              <div className="flex flex-wrap gap-2">
-                <NumberPill
-                  label="Scale"
-                  value={round2(firstNode.centerlineMetadata.scaleAxis)}
-                  unit=""
-                  onChange={(v) => {
-                    if (v === null) return
-                    updateCenterlineMetadata(firstNode.id, { scaleAxis: v })
-                  }}
-                />
-                <NumberPill
-                  label="Samples"
-                  value={firstNode.centerlineMetadata.samples}
-                  unit=""
-                  onChange={(v) => {
-                    if (v === null) return
-                    updateCenterlineMetadata(firstNode.id, { samples: Math.round(v) })
-                  }}
-                />
-                <NumberPill
-                  label="Trim"
-                  value={round2(firstNode.centerlineMetadata.edgeTrim)}
-                  unit="R"
-                  onChange={(v) => {
-                    if (v === null) return
-                    updateCenterlineMetadata(firstNode.id, { edgeTrim: v })
-                  }}
-                />
-                <NumberPill
-                  label="Simplify"
-                  value={round2(firstNode.centerlineMetadata.simplifyTolerance)}
-                  unit="mm"
-                  onChange={(v) => {
-                    if (v === null) return
-                    updateCenterlineMetadata(firstNode.id, { simplifyTolerance: v })
-                  }}
-                />
-              </div>
-              {centerlineResult ? (
-                <p className={`text-xs ${centerlineResult.error ? 'text-destructive' : 'text-muted-foreground'}`}>
-                  {centerlineResult.error ?? `${centerlineResult.branchCount} centerline branch${centerlineResult.branchCount === 1 ? '' : 'es'} generated (${centerlineResult.segmentCount} curve segment${centerlineResult.segmentCount === 1 ? '' : 's'}).`}
-                </p>
-              ) : null}
-              <button
-                className="w-full rounded-md border border-border px-3 py-2 text-xs text-destructive hover:bg-content1"
-                onClick={() => disableCenterline(firstNode.id)}
-              >
-                Remove centerlines
-              </button>
-            </div>
+            <CenterlinesEnabledPanel
+              nodeId={firstNode.id}
+              meta={firstNode.centerlineMetadata}
+              centerlineResult={centerlineResult}
+              onUpdate={(patch) => updateCenterlineMetadata(firstNode.id, patch)}
+              onRemove={() => disableCenterline(firstNode.id)}
+            />
           ) : (
             <button
               className="flex w-full items-center justify-center gap-2 rounded-md border border-border bg-content1 px-3 py-2 text-sm text-foreground hover:bg-content2"
@@ -425,6 +387,246 @@ function DesignTabContent() {
 
       {/* Cut depths */}
       <CutDepthEditor />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Centerlines enabled panel
+// ---------------------------------------------------------------------------
+
+/** Quality 1–5 → [scaleAxis, samples] */
+const QUALITY_MAP: [number, number][] = [
+  [1.0, 3],   // Q1 — fast / coarse
+  [1.5, 3],   // Q2 — default
+  [2.0, 5],   // Q3
+  [2.5, 8],   // Q4
+  [3.5, 12],  // Q5 — slow / fine
+]
+
+function qualityFromMeta(meta: CenterlineMetadata): number {
+  let best = 1
+  let bestDist = Infinity
+  QUALITY_MAP.forEach(([scale, samples], i) => {
+    const dist = Math.abs(meta.scaleAxis - scale) + Math.abs(meta.samples - samples) * 0.3
+    if (dist < bestDist) { bestDist = dist; best = i + 1 }
+  })
+  return best
+}
+
+type AiStatus = 'idle' | 'streaming' | 'error'
+
+function CenterlinesEnabledPanel({
+  nodeId,
+  meta,
+  centerlineResult,
+  onUpdate,
+  onRemove,
+}: {
+  nodeId: string
+  meta: CenterlineMetadata
+  centerlineResult: ReturnType<typeof generateCenterlineForNode> | null
+  onUpdate: (patch: Partial<CenterlineMetadata>) => void
+  onRemove: () => void
+}) {
+  const setAiSmoothStreamingIds = useEditorStore((s) => s.setAiSmoothStreamingIds)
+
+  const [aiStatus, setAiStatus] = useState<AiStatus>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [showKeyInput, setShowKeyInput] = useState(false)
+  const [apiKeyDraft, setApiKeyDraft] = useState(
+    () => localStorage.getItem(OPENROUTER_API_KEY_STORAGE) ?? '',
+  )
+  const abortRef = useRef<AbortController | null>(null)
+
+  const quality = qualityFromMeta(meta)
+  const isStreaming = aiStatus === 'streaming'
+  const hasAiSmoothed = Boolean(meta.aiSmoothedPathData)
+
+  const setQuality = (q: number) => {
+    const [scaleAxis, samples] = QUALITY_MAP[q - 1]
+    onUpdate({ scaleAxis, samples })
+  }
+
+  const saveApiKey = () => {
+    localStorage.setItem(OPENROUTER_API_KEY_STORAGE, apiKeyDraft.trim())
+    setShowKeyInput(false)
+  }
+
+  const handleAiSmooth = useCallback(async () => {
+    const apiKey = localStorage.getItem(OPENROUTER_API_KEY_STORAGE)?.trim()
+    if (!apiKey) { setShowKeyInput(true); return }
+
+    // Use already-stored AI path OR the freshly generated one
+    const pathData = meta.aiSmoothedPathData ?? centerlineResult?.pathData
+    if (!pathData) { setErrorMsg('No centerline path to smooth'); return }
+
+    setAiStatus('streaming')
+    setErrorMsg('')
+    abortRef.current = new AbortController()
+    setAiSmoothStreamingIds([nodeId])
+
+    try {
+      const svgInput = buildSvgForSmoothing(pathData)
+      const result = await streamAiSmooth(svgInput, apiKey, 'openai/gpt-4o-mini', abortRef.current.signal)
+      const newData = extractPathDataFromSvg(result)
+      if (newData) {
+        onUpdate({ aiSmoothedPathData: newData })
+        setAiStatus('idle')
+      } else {
+        setErrorMsg('Could not parse SVG from AI response — check browser console for details')
+        setAiStatus('error')
+      }
+    } catch (err) {
+      if ((err as Error)?.name !== 'AbortError') {
+        setErrorMsg((err as Error)?.message ?? 'Unknown error')
+        setAiStatus('error')
+      } else {
+        setAiStatus('idle')
+      }
+    } finally {
+      setAiSmoothStreamingIds([])
+    }
+  }, [nodeId, meta.aiSmoothedPathData, centerlineResult, onUpdate, setAiSmoothStreamingIds])
+
+  const handleCancel = () => {
+    abortRef.current?.abort()
+  }
+
+  const handleRemove = () => {
+    // Clear AI smoothing before removing centerlines so original is preserved
+    if (hasAiSmoothed) onUpdate({ aiSmoothedPathData: undefined })
+    onRemove()
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Quality slider */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">Quality</p>
+          <span className="text-xs text-foreground">
+            {quality}
+            <span className="ml-1 text-muted-foreground">
+              — scale {QUALITY_MAP[quality - 1][0]} · {QUALITY_MAP[quality - 1][1]} samples
+            </span>
+          </span>
+        </div>
+        <input
+          type="range" min={1} max={5} step={1}
+          value={quality}
+          disabled={isStreaming}
+          className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          onChange={(e) => setQuality(Number(e.target.value))}
+        />
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>Coarse</span><span>Fine</span>
+        </div>
+      </div>
+
+      {/* Simplify slider */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">Simplify</p>
+          <span className="text-xs text-foreground">
+            {round2(meta.simplifyTolerance)}
+            <span className="ml-1 text-muted-foreground">mm</span>
+          </span>
+        </div>
+        <input
+          type="range" min={0} max={2} step={0.1}
+          value={meta.simplifyTolerance}
+          disabled={isStreaming}
+          className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          onChange={(e) => onUpdate({ simplifyTolerance: Number(e.target.value) })}
+        />
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>More nodes</span><span>Fewer nodes</span>
+        </div>
+      </div>
+
+      {/* Force raster */}
+      <label className="flex items-center gap-2 text-xs text-foreground">
+        <input
+          type="checkbox"
+          checked={meta.forceRaster === true}
+          onChange={(e) => onUpdate({ forceRaster: e.target.checked })}
+        />
+        Force raster skeleton (hand drawings)
+      </label>
+
+      {/* Status line */}
+      {centerlineResult && (
+        <p className={`text-xs ${centerlineResult.error ? 'text-destructive' : 'text-muted-foreground'}`}>
+          {centerlineResult.error
+            ?? `${centerlineResult.branchCount} centerline branch${centerlineResult.branchCount === 1 ? '' : 'es'} generated (${centerlineResult.segmentCount} curve segment${centerlineResult.segmentCount === 1 ? '' : 's'}).`}
+          {hasAiSmoothed && !centerlineResult.error && (
+            <span className="ml-1 text-primary">AI smoothed.</span>
+          )}
+        </p>
+      )}
+
+      {/* API key input */}
+      {showKeyInput && (
+        <div className="rounded-md border border-border bg-content1 p-3 space-y-2">
+          <p className="text-xs text-muted-foreground">OpenRouter API key</p>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              placeholder="sk-or-..."
+              className="min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground outline-none"
+              value={apiKeyDraft}
+              onChange={(e) => setApiKeyDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') saveApiKey() }}
+            />
+            <Button size="sm" variant="primary" onPress={saveApiKey}>Save</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Error */}
+      {aiStatus === 'error' && errorMsg && (
+        <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {errorMsg}
+        </p>
+      )}
+
+      {/* Actions */}
+      <div className="flex flex-col gap-2">
+        {isStreaming ? (
+          <button
+            className="w-full rounded-md border border-border px-3 py-2 text-xs text-foreground hover:bg-content1 flex items-center justify-between"
+            onClick={handleCancel}
+          >
+            <span className="animate-pulse">Smoothing…</span>
+            <span className="text-muted-foreground">Cancel</span>
+          </button>
+        ) : (
+          <button
+            className="w-full rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs text-primary hover:bg-primary/20"
+            onClick={handleAiSmooth}
+          >
+            AI Smooth
+          </button>
+        )}
+
+        <button
+          className="w-full rounded-md border border-border px-3 py-2 text-xs text-destructive hover:bg-content1"
+          onClick={handleRemove}
+        >
+          Remove centerlines
+        </button>
+
+        {!showKeyInput && (
+          <button
+            type="button"
+            className="text-center text-[10px] text-muted-foreground hover:text-foreground"
+            onClick={() => setShowKeyInput((v) => !v)}
+          >
+            {localStorage.getItem(OPENROUTER_API_KEY_STORAGE) ? 'Change API key' : 'Set API key'}
+          </button>
+        )}
+      </div>
     </div>
   )
 }

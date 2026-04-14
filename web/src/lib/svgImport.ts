@@ -576,13 +576,15 @@ const readCenterlineMetadata = (element: Element): CenterlineMetadata | undefine
   const samples = parseNumber(element.getAttribute('data-centerline-samples'))
   const edgeTrim = parseNumber(element.getAttribute('data-centerline-edge-trim'))
   const simplifyTolerance = parseNumber(element.getAttribute('data-centerline-simplify-tolerance'))
+  const forceRasterRaw = element.getAttribute('data-centerline-force-raster')
 
   if (
     enabledRaw == null &&
     scaleAxis == null &&
     samples == null &&
     edgeTrim == null &&
-    simplifyTolerance == null
+    simplifyTolerance == null &&
+    forceRasterRaw == null
   ) {
     return undefined
   }
@@ -593,6 +595,7 @@ const readCenterlineMetadata = (element: Element): CenterlineMetadata | undefine
     samples: Math.round(Math.min(15, Math.max(3, samples ?? 3))),
     edgeTrim: Math.min(20, Math.max(0, edgeTrim ?? 1)),
     simplifyTolerance: Math.min(5, Math.max(0, simplifyTolerance ?? 0.5)),
+    forceRaster: forceRasterRaw != null && forceRasterRaw.trim().toLowerCase() === 'true',
   }
 }
 

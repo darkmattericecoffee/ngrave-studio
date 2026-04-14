@@ -71,7 +71,8 @@ function centerlineDataAttrs(node: CanvasNode): string {
     attr('data-centerline-scale-axis', meta.scaleAxis) +
     attr('data-centerline-samples', meta.samples) +
     attr('data-centerline-edge-trim', meta.edgeTrim) +
-    attr('data-centerline-simplify-tolerance', meta.simplifyTolerance)
+    attr('data-centerline-simplify-tolerance', meta.simplifyTolerance) +
+    (meta.forceRaster ? attr('data-centerline-force-raster', 'true') : '')
   )
 }
 
