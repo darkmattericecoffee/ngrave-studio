@@ -23,6 +23,7 @@ export interface MachiningSettings {
   stepover: number | null
   maxFillPasses: number | null
   cutFeedrate: number | null
+  shallowCutFeedrate: number | null
   plungeFeedrate: number | null
   travelZ: number | null
   cutZ: number | null
@@ -58,8 +59,10 @@ export interface CenterlineMetadata {
   enabled: boolean
   scaleAxis: number
   samples: number
+  toolDiameter?: number
   edgeTrim: number
   simplifyTolerance: number
+  smallDetailTightness?: number
   forceRaster?: boolean
   /** AI-smoothed override for the generated pathData — set by the AI Smooth action */
   aiSmoothedPathData?: string

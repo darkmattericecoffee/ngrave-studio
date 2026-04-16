@@ -17,7 +17,7 @@ export interface RasterSkeletonResult {
   error: string | null
 }
 
-const PX_PER_MM = 10
+const DEFAULT_PX_PER_MM = 10
 const MAX_CANVAS_PIXELS = 4_000_000 // ~2000×2000
 const PADDING_PX = 4
 
@@ -28,9 +28,15 @@ interface Bounds {
   maxY: number
 }
 
+export interface RasterSkeletonOptions {
+  pxPerMm?: number
+  minBranchLengthMm?: number
+}
+
 export function generateRasterSkeleton(
   pathData: string[],
   localBounds: Bounds,
+  options: RasterSkeletonOptions = {},
 ): RasterSkeletonResult {
   if (pathData.length === 0) {
     return { branches: [], error: 'No path data supplied to raster skeleton.' }
@@ -39,7 +45,9 @@ export function generateRasterSkeleton(
   const widthMm = Math.max(0.1, localBounds.maxX - localBounds.minX)
   const heightMm = Math.max(0.1, localBounds.maxY - localBounds.minY)
 
-  let pxPerMm = PX_PER_MM
+  let pxPerMm = Number.isFinite(options.pxPerMm) && options.pxPerMm !== undefined
+    ? Math.min(32, Math.max(5, options.pxPerMm))
+    : DEFAULT_PX_PER_MM
   let width = Math.ceil(widthMm * pxPerMm) + PADDING_PX * 2
   let height = Math.ceil(heightMm * pxPerMm) + PADDING_PX * 2
 
@@ -101,7 +109,9 @@ export function generateRasterSkeleton(
   // guaranteed noise, not real features. For simplicity here we just filter
   // by length: 2mm comfortably clears pixel noise while preserving real
   // strokes (letter stems, apple leaf tips, etc.).
-  const minLengthMm = 2.0
+  const minLengthMm = Number.isFinite(options.minBranchLengthMm) && options.minBranchLengthMm !== undefined
+    ? Math.min(4, Math.max(0.5, options.minBranchLengthMm))
+    : 2.0
   const lengthFiltered = rawBranches.filter((b) => polylineLength(b.points) >= minLengthMm)
 
   // Branches whose BOTH endpoints are junction pixels (neither end is a true

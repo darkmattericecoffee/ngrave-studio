@@ -90,6 +90,8 @@ pub struct EngravingConfig {
     pub target_depth: f64,
     pub max_stepdown: f64,
     pub cut_feedrate: f64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub shallow_cut_feedrate: Option<f64>,
     pub plunge_feedrate: f64,
     pub stepover: f64,
     #[cfg_attr(feature = "serde", serde(default))]
@@ -120,6 +122,7 @@ impl Default for EngravingConfig {
             target_depth: 1.0,
             max_stepdown: 1.0,
             cut_feedrate: 300.0,
+            shallow_cut_feedrate: None,
             plunge_feedrate: 120.0,
             stepover: 2.0,
             max_fill_passes: None,

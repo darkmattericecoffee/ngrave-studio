@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback } from 'react'
+import { useRef, useState, useCallback, useEffect } from 'react'
 import type { ChangeEvent, DragEvent } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 
@@ -20,6 +20,7 @@ import { buildCenterlineExportNodes, subtreeHasActiveCenterline } from './lib/ce
 import { DEFAULT_MATERIAL, MATERIAL_PRESETS } from './lib/materialPresets'
 import type { MaterialPreset } from './lib/materialPresets'
 import { getAutoImportPlacement } from './lib/importPlacement'
+import { loadStudioPreferences, saveStudioPreferences } from './lib/studioPreferences'
 import { useEditorStore } from './store'
 import { insertTabs } from './lib/gcodeTabInsertion'
 import type { ViewMode } from './types/preview'
@@ -40,6 +41,12 @@ function App() {
   const leftPanelTab = useEditorStore((state) => state.leftPanelTab)
   const setLeftPanelTab = useEditorStore((state) => state.setLeftPanelTab)
   const viewMode = useEditorStore((state) => state.preview.viewMode)
+  const previewCameraType = useEditorStore((state) => state.preview.cameraType)
+  const previewShowStock = useEditorStore((state) => state.preview.showStock)
+  const previewShowSvgOverlay = useEditorStore((state) => state.preview.showSvgOverlay)
+  const previewShowRapidMoves = useEditorStore((state) => state.preview.showRapidMoves)
+  const previewPlaybackRate = useEditorStore((state) => state.preview.playbackRate)
+  const previewLoopPlayback = useEditorStore((state) => state.preview.loopPlayback)
   const setViewMode = useEditorStore((state) => state.setViewMode)
   const initPreview = useEditorStore((state) => state.initPreview)
   const initProgress = useEditorStore((state) => state.preview.initProgress)
@@ -51,12 +58,80 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false)
   const [isInitializingPreview, setIsInitializingPreview] = useState(false)
   const [downloadFormat, setDownloadFormat] = useState<'nc' | 'gcode'>('nc')
+  const preferencesLoadedRef = useRef(false)
+  const skipInitialPreferencesSaveRef = useRef(true)
 
   const isCanvasEmpty = rootIds.length === 0
 
   const gcode = useGcodeGeneration()
 
   useKeyboardShortcuts()
+
+  useEffect(() => {
+    const preferences = loadStudioPreferences()
+    if (preferences?.artboard) {
+      useEditorStore.setState((state) => ({
+        artboard: { ...state.artboard, ...preferences.artboard },
+      }))
+    }
+    if (preferences?.machiningSettings) {
+      useEditorStore.setState((state) => ({
+        machiningSettings: { ...state.machiningSettings, ...preferences.machiningSettings },
+      }))
+    }
+    if (preferences?.materialPreset) {
+      setMaterialPreset(preferences.materialPreset)
+      useEditorStore.getState().setMaterialPreset(preferences.materialPreset)
+    }
+    if (preferences?.downloadFormat) {
+      setDownloadFormat(preferences.downloadFormat)
+    }
+    if (preferences?.preview) {
+      useEditorStore.setState((state) => ({
+        preview: { ...state.preview, ...preferences.preview },
+      }))
+    }
+    preferencesLoadedRef.current = true
+  }, [])
+
+  useEffect(() => {
+    if (!preferencesLoadedRef.current) return
+    if (skipInitialPreferencesSaveRef.current) {
+      skipInitialPreferencesSaveRef.current = false
+      return
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      saveStudioPreferences({
+        version: 1,
+        artboard,
+        machiningSettings,
+        materialPreset,
+        downloadFormat,
+        preview: {
+          cameraType: previewCameraType,
+          showStock: previewShowStock,
+          showSvgOverlay: previewShowSvgOverlay,
+          showRapidMoves: previewShowRapidMoves,
+          playbackRate: previewPlaybackRate,
+          loopPlayback: previewLoopPlayback,
+        },
+      })
+    }, 150)
+
+    return () => window.clearTimeout(timeoutId)
+  }, [
+    artboard,
+    machiningSettings,
+    materialPreset,
+    downloadFormat,
+    previewCameraType,
+    previewShowStock,
+    previewShowSvgOverlay,
+    previewShowRapidMoves,
+    previewPlaybackRate,
+    previewLoopPlayback,
+  ])
 
   const handleProjectExport = () => {
     const svgString = exportProjectSVG(
@@ -93,7 +168,9 @@ function App() {
         const hasCenter = subtreeHasActiveCenterline(root, nodesById)
         console.log('[centerline-export] root', rootId, 'hasActiveCenterline:', hasCenter)
         if (!hasCenter) continue
-        const { nodesById: perRoot } = buildCenterlineExportNodes(rootId, nodesById)
+        const { nodesById: perRoot } = buildCenterlineExportNodes(rootId, nodesById, {
+          toolDiameter: machiningSettings.toolDiameter,
+        })
         mergedNodes = { ...mergedNodes, ...perRoot }
         exportedRoots.push(rootId)
       }

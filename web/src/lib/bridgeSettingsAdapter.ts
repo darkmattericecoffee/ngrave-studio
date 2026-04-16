@@ -46,6 +46,7 @@ export function buildBridgeSettings(
       ...(machining.stepover != null && { stepover: machining.stepover }),
       max_fill_passes: machining.maxFillPasses,
       ...(machining.cutFeedrate != null && { cut_feedrate: machining.cutFeedrate }),
+      ...(machining.shallowCutFeedrate != null && { shallow_cut_feedrate: machining.shallowCutFeedrate }),
       ...(machining.plungeFeedrate != null && { plunge_feedrate: machining.plungeFeedrate }),
       ...(machining.machineWidth != null && { machine_width: machining.machineWidth }),
       ...(machining.machineHeight != null && { machine_height: machining.machineHeight }),

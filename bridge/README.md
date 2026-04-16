@@ -329,6 +329,7 @@ Each segment carries `operationColor` from the operation ranges. Use `program.op
 | `target_depth` | mm | Default cut depth |
 | `max_stepdown` | mm | Maximum depth per pass |
 | `cut_feedrate` | mm/min | Cutting feed rate |
+| `shallow_cut_feedrate` | mm/min | Optional cutting feed rate for shallow passes; ramps down to `cut_feedrate` at full depth |
 | `plunge_feedrate` | mm/min | Vertical plunge speed |
 | `stepover` | mm | Distance between parallel passes |
 | `fill_mode` | `"Pocket"` \| `"Contour"` | Default fill strategy |

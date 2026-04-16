@@ -365,6 +365,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     stepover: null,
     maxFillPasses: null,
     cutFeedrate: null,
+    shallowCutFeedrate: null,
     plungeFeedrate: null,
     travelZ: null,
     cutZ: null,
@@ -1099,6 +1100,15 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     set((state) => {
       const node = state.nodesById[nodeId]
       if (!node || !node.centerlineMetadata) return {}
+      const invalidatesAiSmooth = (
+        patch.scaleAxis !== undefined ||
+        patch.samples !== undefined ||
+        patch.toolDiameter !== undefined ||
+        patch.edgeTrim !== undefined ||
+        patch.simplifyTolerance !== undefined ||
+        patch.smallDetailTightness !== undefined ||
+        patch.forceRaster !== undefined
+      ) && patch.aiSmoothedPathData === undefined
       return {
         nodesById: {
           ...state.nodesById,
@@ -1107,6 +1117,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
             centerlineMetadata: normalizeCenterlineMetadata({
               ...node.centerlineMetadata,
               ...patch,
+              ...(invalidatesAiSmooth ? { aiSmoothedPathData: undefined } : {}),
             }),
           } as CanvasNode,
         },

@@ -21,6 +21,7 @@
     "target_depth": 1.0,
     "max_stepdown": 1.0,
     "cut_feedrate": 300.0,
+    "shallow_cut_feedrate": null,
     "plunge_feedrate": 120.0,
     "stepover": 2.0,
     "fill_mode": "Pocket",

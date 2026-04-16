@@ -597,6 +597,41 @@ mod test {
     }
 
     #[test]
+    fn engraving_feedrate_ramps_down_as_depth_increases() {
+        let svg = r#"
+            <svg xmlns="http://www.w3.org/2000/svg" width="10mm" height="10mm" viewBox="0 0 10 10">
+                <path d="M1 1H9" stroke="black" fill="none" />
+            </svg>
+        "#;
+        let (program, warnings) = get_engraving_actual(
+            svg,
+            EngravingConfig {
+                enabled: true,
+                material_width: 20.0,
+                material_height: 20.0,
+                material_thickness: 10.0,
+                tool_diameter: 2.0,
+                target_depth: 3.0,
+                max_stepdown: 1.0,
+                cut_feedrate: 240.0,
+                shallow_cut_feedrate: Some(420.0),
+                plunge_feedrate: 120.0,
+                stepover: 2.0,
+                ..EngravingConfig::default()
+            },
+        );
+        let code = format_tokens(&program);
+
+        assert_eq!(warnings, vec![]);
+        assert_eq!(code.matches("G1 Z-1 F120").count(), 1, "{code}");
+        assert_eq!(code.matches("G1 Z-2 F120").count(), 1, "{code}");
+        assert_eq!(code.matches("G1 Z-3 F120").count(), 1, "{code}");
+        assert_eq!(code.matches(" F360").count(), 1, "{code}");
+        assert_eq!(code.matches(" F300").count(), 1, "{code}");
+        assert_eq!(code.matches(" F240").count(), 1, "{code}");
+    }
+
+    #[test]
     fn engraving_circle_and_donut_generate_fill_toolpaths() {
         let circle = r#"
             <svg xmlns="http://www.w3.org/2000/svg" width="12mm" height="12mm" viewBox="0 0 12 12">
@@ -909,6 +944,7 @@ mod test {
                 selector_filter: "#left".into(),
                 target_depth: 1.0,
                 fill_mode: None,
+                allow_thicken_routing: false,
             },
             EngravingOperation {
                 id: "right-op".into(),
@@ -916,6 +952,7 @@ mod test {
                 selector_filter: "#right".into(),
                 target_depth: 2.0,
                 fill_mode: None,
+                allow_thicken_routing: false,
             },
         ];
 

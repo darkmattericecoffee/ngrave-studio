@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button } from '@heroui/react'
+import { Button, Label, Slider } from '@heroui/react'
 
 import { resolveEffectiveMaxStepdown } from '../lib/bridgeSettingsAdapter'
 import { useEditorStore } from '../store'
@@ -18,6 +18,17 @@ interface MaterialTabContentProps {
 function defaultStepover(shape: RouterBitShape, diameter: number): number {
   const factor = shape === 'Flat' ? 0.8 : 0.4
   return Math.round(diameter * factor * 100) / 100
+}
+
+const DEFAULT_CUT_FEEDRATE = 300
+const DEFAULT_PLUNGE_FEEDRATE = 120
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+function positiveOrNull(value: number | null): number | null {
+  return value !== null && value > 0 ? value : null
 }
 
 export function MaterialTabContent({ materialPreset, onMaterialChange }: MaterialTabContentProps) {
@@ -39,9 +50,32 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
 
   const depthPerPass =
     machiningSettings.passCount > 1
-      ? Math.round((maxCutDepth / machiningSettings.passCount) * 100) / 100
+      ? round2(maxCutDepth / machiningSettings.passCount)
       : null
   const effectiveMaxStepdown = resolveEffectiveMaxStepdown(machiningSettings, maxCutDepth)
+  const passMode = machiningSettings.maxStepdown != null ? 'stepdown' : 'passes'
+  const estimatedPassCount = effectiveMaxStepdown != null
+    ? Math.max(1, Math.ceil(maxCutDepth / effectiveMaxStepdown))
+    : 1
+  const fullDepthFeed = machiningSettings.cutFeedrate ?? DEFAULT_CUT_FEEDRATE
+  const maxFeed = machiningSettings.shallowCutFeedrate ?? fullDepthFeed
+  const feedRange = [Math.min(fullDepthFeed, maxFeed), Math.max(fullDepthFeed, maxFeed)]
+  const feedSliderMax = Math.max(1000, Math.ceil(feedRange[1] / 100) * 100)
+  const hasFeedRange = feedRange[1] > feedRange[0]
+  const firstPassDepth = effectiveMaxStepdown != null ? Math.min(effectiveMaxStepdown, maxCutDepth) : maxCutDepth
+  const firstPassFeed = hasFeedRange && maxCutDepth > 0
+    ? Math.round(feedRange[1] + (feedRange[0] - feedRange[1]) * Math.min(1, firstPassDepth / maxCutDepth))
+    : fullDepthFeed
+
+  const updateFeedRange = (values: number[]) => {
+    const [rawA = fullDepthFeed, rawB = maxFeed] = values
+    const minFeed = Math.max(10, Math.round(Math.min(rawA, rawB)))
+    const highFeed = Math.max(minFeed, Math.round(Math.max(rawA, rawB)))
+    setField({
+      cutFeedrate: minFeed,
+      shallowCutFeedrate: highFeed > minFeed ? highFeed : null,
+    })
+  }
 
   return (
     <div className="space-y-5">
@@ -86,9 +120,7 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
         <SectionHeading title="Router bit" />
         <div className="flex items-end gap-3">
           <NumberField label="Diameter" unit="mm" value={machiningSettings.toolDiameter}
-            onChange={(v) => { if (v !== null) setField({ toolDiameter: v }) }} />
-          <NumberField label="Height" unit="mm" value={machiningSettings.defaultDepthMm}
-            onChange={(v) => { if (v !== null) setField({ defaultDepthMm: v }) }} />
+            onChange={(v) => { if (v !== null && v > 0) setField({ toolDiameter: v }) }} />
         </div>
         <div className="space-y-1.5">
           <p className="text-xs text-muted-foreground">Shape</p>
@@ -123,38 +155,114 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
         </div>
         <div className={`transition-all duration-200 ${stepoverFlash ? 'ring-2 ring-primary rounded-lg p-1 -m-1' : ''}`}>
           <NumberField label="Stepover" unit="mm" value={machiningSettings.stepover}
-            onChange={(v) => { setStepoverFlash(false); setField({ stepover: v }) }} />
+            onChange={(v) => { setStepoverFlash(false); setField({ stepover: positiveOrNull(v) }) }} />
         </div>
-        <div className="flex items-end gap-3">
+      </section>
+
+      {/* Cut planning */}
+      <section className="space-y-3">
+        <SectionHeading title="Cut planning" />
+        <div className="flex flex-wrap items-end gap-3">
+          <NumberField label="Target depth" unit="mm" value={machiningSettings.defaultDepthMm}
+            onChange={(v) => { if (v !== null && v > 0) setField({ defaultDepthMm: v }) }} />
           <div className="grid gap-1">
-            <p className="text-xs text-muted-foreground">Passes</p>
-            <div className="inline-flex h-8 items-center rounded-md border border-border bg-content1 px-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                className="w-10 border-0 bg-transparent px-0 text-sm text-foreground outline-none"
-                value={String(machiningSettings.passCount)}
-                onChange={(e) => {
-                  const v = Math.max(1, Math.round(Number(e.target.value)))
-                  if (Number.isFinite(v)) setField({ passCount: v })
-                }}
-              />
-              <span className="pl-1 text-xs text-muted-foreground">x</span>
+            <p className="text-xs text-muted-foreground">Depth strategy</p>
+            <div className="inline-flex h-8 overflow-hidden rounded-md border border-border bg-content1">
+              <button
+                type="button"
+                className={`px-2 text-xs transition-colors ${passMode === 'passes' ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-content2'}`}
+                onClick={() => setField({ maxStepdown: null })}
+              >
+                Passes
+              </button>
+              <button
+                type="button"
+                className={`px-2 text-xs transition-colors ${passMode === 'stepdown' ? 'bg-primary text-primary-foreground' : 'text-foreground hover:bg-content2'}`}
+                onClick={() => setField({ maxStepdown: effectiveMaxStepdown ?? Math.max(0.1, maxCutDepth) })}
+              >
+                mm / pass
+              </button>
             </div>
           </div>
-          {depthPerPass !== null && (
-            <div className="flex h-8 flex-1 items-center justify-end gap-1 text-sm text-foreground">
-              <span className="font-medium">
-                {machiningSettings.maxStepdown != null ? effectiveMaxStepdown : depthPerPass} mm
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {machiningSettings.maxStepdown != null
-                  ? `advanced override, total depth ${maxCutDepth} mm`
-                  : `/ pass of ${maxCutDepth} mm`}
-              </span>
+          {passMode === 'passes' ? (
+            <div className="grid gap-1">
+              <p className="text-xs text-muted-foreground">Passes</p>
+              <div className="inline-flex h-8 items-center rounded-md border border-border bg-content1 px-2">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  className="w-10 border-0 bg-transparent px-0 text-sm text-foreground outline-none"
+                  value={String(machiningSettings.passCount)}
+                  onChange={(e) => {
+                    const v = Math.max(1, Math.round(Number(e.target.value)))
+                    if (Number.isFinite(v)) setField({ passCount: v })
+                  }}
+                />
+                <span className="pl-1 text-xs text-muted-foreground">x</span>
+              </div>
             </div>
+          ) : (
+            <NumberField label="Depth / pass" unit="mm" value={machiningSettings.maxStepdown}
+              onChange={(v) => setField({ maxStepdown: positiveOrNull(v) ?? effectiveMaxStepdown ?? 1 })} />
           )}
         </div>
+        <div className="text-xs text-muted-foreground">
+          {passMode === 'passes'
+            ? `${depthPerPass ?? maxCutDepth} mm per pass across ${maxCutDepth} mm.`
+            : `${estimatedPassCount} pass${estimatedPassCount === 1 ? '' : 'es'} across ${maxCutDepth} mm.`}
+        </div>
+      </section>
+
+      {/* Feed speed */}
+      <section className="space-y-3">
+        <SectionHeading title="Feed speed" />
+        <Slider
+          aria-label="Feed range"
+          className="w-full"
+          value={feedRange}
+          minValue={10}
+          maxValue={feedSliderMax}
+          step={10}
+          onChange={(value) => updateFeedRange(value as number[])}
+        >
+          <div className="flex items-center justify-between gap-3">
+            <Label className="text-xs text-muted-foreground">XY feed range</Label>
+            <Slider.Output className="text-xs text-foreground" />
+          </div>
+          <Slider.Track className="relative h-2 w-full cursor-pointer rounded-full bg-content2">
+            {({ state }) => (
+              <>
+                <Slider.Fill className="absolute inset-y-0 rounded-full bg-primary" />
+                {state.values.map((_, index) => (
+                  <Slider.Thumb
+                    key={index}
+                    index={index}
+                    className="block h-4 w-4 rounded-full border-2 border-white bg-primary shadow-md outline-none"
+                  />
+                ))}
+              </>
+            )}
+          </Slider.Track>
+        </Slider>
+        <div className="flex flex-wrap gap-3">
+          <NumberField label="Min feed" unit="mm/min" value={feedRange[0]}
+            onChange={(v) => {
+              const nextMin = positiveOrNull(v) ?? feedRange[0]
+              updateFeedRange([nextMin, Math.max(nextMin, feedRange[1])])
+            }} />
+          <NumberField label="Max feed" unit="mm/min" value={feedRange[1]}
+            onChange={(v) => {
+              const nextMax = positiveOrNull(v) ?? feedRange[1]
+              updateFeedRange([Math.min(feedRange[0], nextMax), nextMax])
+            }} />
+          <NumberField label="Plunge feed" unit="mm/min" value={machiningSettings.plungeFeedrate ?? DEFAULT_PLUNGE_FEEDRATE}
+            onChange={(v) => setField({ plungeFeedrate: positiveOrNull(v) })} />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {hasFeedRange
+            ? `First pass about ${firstPassFeed} mm/min, final pass ${feedRange[0]} mm/min.`
+            : `All XY cuts use ${feedRange[0]} mm/min.`}
+        </p>
       </section>
 
       {/* Tabs */}
@@ -198,13 +306,6 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
         </button>
         {advancedOpen && (
           <div className="mt-3 flex flex-wrap gap-3">
-            <NumberField label="Max Stepdown" unit="mm" value={machiningSettings.maxStepdown}
-              onChange={(v) => setField({ maxStepdown: v })} />
-            <div className="w-full -mt-1 text-xs text-muted-foreground">
-              {machiningSettings.maxStepdown != null
-                ? `Bridge uses the advanced max stepdown of ${effectiveMaxStepdown} mm.`
-                : `Bridge derives max stepdown from Passes: ${effectiveMaxStepdown ?? maxCutDepth} mm.`}
-            </div>
             <div className="w-full space-y-1">
               <label className="text-xs text-muted-foreground">Max Fill Passes</label>
               <div className="grid grid-cols-4 gap-1">
@@ -227,10 +328,6 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
                 Limit lateral pocket passes. Lower values allow thicker single-pass cuts.
               </p>
             </div>
-            <NumberField label="Cut Feed" unit="mm/min" value={machiningSettings.cutFeedrate}
-              onChange={(v) => setField({ cutFeedrate: v })} />
-            <NumberField label="Plunge Feed" unit="mm/min" value={machiningSettings.plungeFeedrate}
-              onChange={(v) => setField({ plungeFeedrate: v })} />
             <NumberField label="Travel Z" unit="mm" value={machiningSettings.travelZ}
               onChange={(v) => setField({ travelZ: v })} />
             <NumberField label="Cut Z" unit="mm" value={machiningSettings.cutZ}

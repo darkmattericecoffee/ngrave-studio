@@ -143,13 +143,11 @@ function renderCenterlineOverlayNode(
   const t = getEffectiveTransform(node, live)
 
   if (node.centerlineMetadata?.enabled) {
-    // Prefer AI-smoothed override when present; fall back to generated path
-    const pathData =
-      node.centerlineMetadata.aiSmoothedPathData ??
-      (() => {
-        const result = generateCenterlineForNode(nodeId, nodesById, { toolDiameter })
-        return result.error ? null : result.pathData
-      })()
+    const result = generateCenterlineForNode(nodeId, nodesById, { toolDiameter })
+    const recoveredPathData = result.recoveredDetails?.map((detail) => detail.pathData).join(' ') ?? ''
+    const pathData = node.centerlineMetadata.aiSmoothedPathData
+      ? [node.centerlineMetadata.aiSmoothedPathData, recoveredPathData].filter(Boolean).join(' ')
+      : result.error ? null : result.pathData
 
     if (!pathData) return null
 

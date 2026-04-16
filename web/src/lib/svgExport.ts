@@ -70,8 +70,10 @@ function centerlineDataAttrs(node: CanvasNode): string {
     attr('data-centerline-enabled', meta.enabled ? 'true' : 'false') +
     attr('data-centerline-scale-axis', meta.scaleAxis) +
     attr('data-centerline-samples', meta.samples) +
+    (meta.toolDiameter !== undefined ? attr('data-centerline-tool-diameter', meta.toolDiameter) : '') +
     attr('data-centerline-edge-trim', meta.edgeTrim) +
     attr('data-centerline-simplify-tolerance', meta.simplifyTolerance) +
+    attr('data-centerline-small-detail-tightness', meta.smallDetailTightness ?? 0) +
     (meta.forceRaster ? attr('data-centerline-force-raster', 'true') : '')
   )
 }

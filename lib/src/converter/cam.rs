@@ -44,6 +44,7 @@ struct PolylinePath {
 struct Toolpath {
     points: Vec<Point<f64>>,
     depth: f64,
+    target_depth: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -216,13 +217,17 @@ fn contour_to_points(contour: &Contour) -> Vec<Point<f64>> {
     contour.iter().map(|p| Point::new(p[0], p[1])).collect()
 }
 
-fn contour_toolpath(contour: &Contour, depth: f64) -> Option<Toolpath> {
+fn contour_toolpath(contour: &Contour, depth: f64, target_depth: f64) -> Option<Toolpath> {
     let mut points = contour_to_points(contour);
     if points.len() < 3 {
         return None;
     }
     points.push(points[0]);
-    Some(Toolpath { points, depth })
+    Some(Toolpath {
+        points,
+        depth,
+        target_depth,
+    })
 }
 
 fn depth_passes(target_depth: f64, max_stepdown: f64) -> Vec<f64> {
@@ -259,7 +264,11 @@ fn translate_toolpaths(groups: &mut [OperationGroup], offset: Point<f64>) {
     }
 }
 
-fn build_stroke_groups(paths: Vec<PolylinePath>, depths: &[f64]) -> Vec<OperationGroup> {
+fn build_stroke_groups(
+    paths: Vec<PolylinePath>,
+    depths: &[f64],
+    target_depth: f64,
+) -> Vec<OperationGroup> {
     paths
         .into_iter()
         .filter(|path| path.points.len() >= 2)
@@ -270,6 +279,7 @@ fn build_stroke_groups(paths: Vec<PolylinePath>, depths: &[f64]) -> Vec<Operatio
                 .map(|depth| Toolpath {
                     points: path.points.clone(),
                     depth,
+                    target_depth,
                 })
                 .collect(),
             reversible: true,
@@ -288,6 +298,7 @@ fn build_fill_groups(
     tool_radius: f64,
     stepover: f64,
     max_fill_passes: Option<u32>,
+    target_depth: f64,
     allow_thicken_routing: bool,
     warnings: &mut Vec<GenerationWarning>,
 ) -> FillGroupsResult {
@@ -347,7 +358,7 @@ fn build_fill_groups(
                                 break 'fill;
                             }
                         }
-                        if let Some(path) = contour_toolpath(contour, depth) {
+                        if let Some(path) = contour_toolpath(contour, depth, target_depth) {
                             paths.push(path);
                             path_count += 1;
                         }
@@ -367,7 +378,7 @@ fn build_fill_groups(
                 // Route the thin shape in contour mode: bit traces the perimeter.
                 // The bit is wider than the feature so the cut thickens it.
                 let contour_groups =
-                    build_fill_contour_groups(std::slice::from_ref(shape), depths);
+                    build_fill_contour_groups(std::slice::from_ref(shape), depths, target_depth);
                 thickened_groups.extend(contour_groups);
             } else {
                 warnings.push(GenerationWarning::ToolTooLargeForFill);
@@ -381,14 +392,18 @@ fn build_fill_groups(
     }
 }
 
-fn build_fill_contour_groups(fill_shapes: &[Shape], depths: &[f64]) -> Vec<OperationGroup> {
+fn build_fill_contour_groups(
+    fill_shapes: &[Shape],
+    depths: &[f64],
+    target_depth: f64,
+) -> Vec<OperationGroup> {
     let mut groups = vec![];
 
     for shape in fill_shapes {
         let mut paths = vec![];
         for depth in depths.iter().copied() {
             for contour in shape {
-                if let Some(path) = contour_toolpath(contour, depth) {
+                if let Some(path) = contour_toolpath(contour, depth, target_depth) {
                     paths.push(path);
                 }
             }
@@ -461,7 +476,14 @@ fn optimize_scheduled_operation_groups_from(
 ) -> (Vec<ScheduledOperationGroup>, Point<f64>) {
     if groups.len() <= 1 {
         if let Some(last_group) = groups.last() {
-            current = *last_group.group.paths.last().unwrap().points.last().unwrap();
+            current = *last_group
+                .group
+                .paths
+                .last()
+                .unwrap()
+                .points
+                .last()
+                .unwrap();
         }
         return (groups, current);
     }
@@ -518,7 +540,10 @@ fn schedule_operation_groups_by_depth(
         let mut depth_paths = BTreeMap::<u64, Vec<Toolpath>>::new();
 
         for path in group.paths {
-            depth_paths.entry(path.depth.to_bits()).or_default().push(path);
+            depth_paths
+                .entry(path.depth.to_bits())
+                .or_default()
+                .push(path);
         }
 
         for (depth_key, paths) in depth_paths {
@@ -609,12 +634,35 @@ fn append_cut_move<'input>(program: &mut Vec<Token<'input>>, point: Point<f64>, 
     );
 }
 
+fn cut_feedrate_for_depth(engraving: &EngravingConfig, depth: f64, target_depth: f64) -> f64 {
+    let Some(shallow_feedrate) = engraving.shallow_cut_feedrate else {
+        return engraving.cut_feedrate;
+    };
+    if target_depth <= 0.0 {
+        return engraving.cut_feedrate;
+    }
+
+    let depth_ratio = (depth.abs() / target_depth).clamp(0.0, 1.0);
+    shallow_feedrate + (engraving.cut_feedrate - shallow_feedrate) * depth_ratio
+}
+
 fn validate_engraving_config(engraving: &EngravingConfig) -> Result<(), String> {
-if engraving.target_depth <= 0.0 {
+    if engraving.target_depth <= 0.0 {
         return Err("Target depth must be greater than 0.".into());
     }
     if engraving.max_stepdown <= 0.0 {
         return Err("Max stepdown must be greater than 0.".into());
+    }
+    if engraving.cut_feedrate <= 0.0 {
+        return Err("Cut feedrate must be greater than 0.".into());
+    }
+    if let Some(shallow_cut_feedrate) = engraving.shallow_cut_feedrate {
+        if shallow_cut_feedrate <= 0.0 {
+            return Err("Shallow cut feedrate must be greater than 0.".into());
+        }
+    }
+    if engraving.plunge_feedrate <= 0.0 {
+        return Err("Plunge feedrate must be greater than 0.".into());
     }
     if engraving.tool_diameter <= 0.0 {
         return Err("Tool diameter must be greater than 0.".into());
@@ -662,7 +710,14 @@ fn collect_engraving_groups<'a>(
     engraving: &EngravingConfig,
     options: ConversionOptions,
     allow_thicken_routing: bool,
-) -> Result<(Vec<OperationGroup>, Vec<OperationGroup>, Vec<GenerationWarning>), String> {
+) -> Result<
+    (
+        Vec<OperationGroup>,
+        Vec<OperationGroup>,
+        Vec<GenerationWarning>,
+    ),
+    String,
+> {
     validate_engraving_config(engraving)?;
     let options = apply_dimension_overrides(options, engraving);
     let selector_filter = config
@@ -742,7 +797,7 @@ fn collect_engraving_groups<'a>(
         warnings.push(GenerationWarning::DepthExceedsMaterialThickness);
     }
 
-    let mut groups = build_stroke_groups(cam_turtle.stroke_paths, &depths);
+    let mut groups = build_stroke_groups(cam_turtle.stroke_paths, &depths, engraving.target_depth);
     let mut thickened_groups: Vec<OperationGroup> = vec![];
 
     match engraving.fill_mode {
@@ -760,6 +815,7 @@ fn collect_engraving_groups<'a>(
                 tool_radius,
                 engraving.stepover,
                 engraving.max_fill_passes,
+                engraving.target_depth,
                 allow_thicken_routing,
                 &mut warnings,
             );
@@ -770,7 +826,11 @@ fn collect_engraving_groups<'a>(
             }
         }
         FillMode::Contour => {
-            groups.extend(build_fill_contour_groups(&fill_shapes, &depths));
+            groups.extend(build_fill_contour_groups(
+                &fill_shapes,
+                &depths,
+                engraving.target_depth,
+            ));
         }
     }
 
@@ -805,7 +865,11 @@ fn collect_engraving_groups<'a>(
         }
     }
 
-    Ok((optimize_operation_groups(groups), thickened_groups, collect_warnings(warnings)))
+    Ok((
+        optimize_operation_groups(groups),
+        thickened_groups,
+        collect_warnings(warnings),
+    ))
 }
 
 fn append_engraving_program_header<'input>(
@@ -844,8 +908,9 @@ fn append_engraving_paths<'input>(
             program.extend(machine.tool_on());
             program.extend(machine.absolute());
             append_plunge(program, path.depth, engraving.plunge_feedrate);
+            let cut_feedrate = cut_feedrate_for_depth(engraving, path.depth, path.target_depth);
             for point in path.points.iter().copied().skip(1) {
-                append_cut_move(program, point, engraving.cut_feedrate);
+                append_cut_move(program, point, cut_feedrate);
             }
         }
     }
@@ -910,7 +975,9 @@ pub fn svg2program_engraving_multi<'a, 'input: 'a>(
     engraving: &EngravingConfig,
     operations: &[EngravingOperation],
 ) -> Result<(Vec<Token<'input>>, Vec<GenerationWarning>), String> {
-    svg2program_engraving_multi_with_progress(doc, config, options, machine, engraving, operations, None)
+    svg2program_engraving_multi_with_progress(
+        doc, config, options, machine, engraving, operations, None,
+    )
 }
 
 pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
@@ -951,8 +1018,13 @@ pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
             operation_engraving.fill_mode = fm;
         }
 
-        let (groups, thickened_groups, operation_warnings) =
-            collect_engraving_groups(doc, &operation_config, &operation_engraving, options.clone(), operation.allow_thicken_routing)?;
+        let (groups, thickened_groups, operation_warnings) = collect_engraving_groups(
+            doc,
+            &operation_config,
+            &operation_engraving,
+            options.clone(),
+            operation.allow_thicken_routing,
+        )?;
 
         warnings.extend(operation_warnings);
 

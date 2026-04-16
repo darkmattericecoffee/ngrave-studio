@@ -60,6 +60,9 @@ struct Opt {
     /// Feedrate used for XY cutting moves in CAM mode (mm/min)
     cut_feedrate: Option<f64>,
     #[arg(long)]
+    /// Optional XY feedrate for shallow CAM passes; ramps down to cut-feedrate at full depth (mm/min)
+    shallow_cut_feedrate: Option<f64>,
+    #[arg(long)]
     /// Stepover used for pocketing filled regions in CAM mode (mm)
     stepover: Option<f64>,
     #[arg(long)]
@@ -212,6 +215,9 @@ fn main() -> io::Result<()> {
             }
             if let Some(cut_feedrate) = opt.cut_feedrate {
                 engraving.cut_feedrate = cut_feedrate;
+            }
+            if let Some(shallow_cut_feedrate) = opt.shallow_cut_feedrate {
+                engraving.shallow_cut_feedrate = Some(shallow_cut_feedrate);
             }
             if let Some(stepover) = opt.stepover {
                 engraving.stepover = stepover;

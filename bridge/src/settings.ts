@@ -5,6 +5,7 @@ export const RECOMMENDED_ADVANCED_PATHS = new Set([
   "engraving.max_stepdown",
   "engraving.stepover",
   "engraving.cut_feedrate",
+  "engraving.shallow_cut_feedrate",
   "engraving.plunge_feedrate",
 ]);
 
@@ -32,12 +33,14 @@ export function computeRecommendedAdvancedValues(
   );
   const maxStepdown = Number(clamp(toolDiameter * 0.4, 0.3, 2.5).toFixed(2));
   const cutFeedrate = Number(clamp(180 + toolDiameter * 90, 180, 540).toFixed(0));
+  const shallowCutFeedrate = Number(clamp(cutFeedrate * 1.45, cutFeedrate, 900).toFixed(0));
   const plungeFeedrate = Number(clamp(cutFeedrate * 0.4, 90, 220).toFixed(0));
 
   return {
     "engraving.max_stepdown": maxStepdown,
     "engraving.stepover": stepover,
     "engraving.cut_feedrate": cutFeedrate,
+    "engraving.shallow_cut_feedrate": shallowCutFeedrate,
     "engraving.plunge_feedrate": plungeFeedrate,
   };
 }

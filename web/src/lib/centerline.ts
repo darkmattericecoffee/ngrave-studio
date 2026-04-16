@@ -14,16 +14,18 @@ import svgpath from 'svgpath'
 import { resolveNodeCncMetadata } from './cncMetadata'
 import { generateRasterSkeleton, type RasterBranch } from './centerlineRaster'
 import { fitPolylineToCubics, type CubicBezier } from './bezierFit'
-import type { CanvasNode, CenterlineMetadata, PathNode } from '../types/editor'
+import type { CanvasFillRule, CanvasNode, CenterlineMetadata, GroupNode, PathNode } from '../types/editor'
 
 type Matrix = [number, number, number, number, number, number]
 type Bezier = number[][]
 
 export interface CenterlineResult {
   pathData: string | null
+  centerlinePathData?: string | null
   segmentCount: number
   branchCount: number
   error: string | null
+  recoveredDetails?: RecoveredCenterlineDetail[]
 }
 
 export const DEFAULT_CENTERLINE_METADATA: CenterlineMetadata = {
@@ -32,6 +34,7 @@ export const DEFAULT_CENTERLINE_METADATA: CenterlineMetadata = {
   samples: 3,
   edgeTrim: 1,
   simplifyTolerance: 0.5,
+  smallDetailTightness: 0,
   forceRaster: false,
 }
 
@@ -39,10 +42,14 @@ const CENTERLINE_SCALE_MIN = 1
 const CENTERLINE_SCALE_MAX = 4
 const CENTERLINE_SAMPLES_MIN = 3
 const CENTERLINE_SAMPLES_MAX = 15
+const CENTERLINE_TOOL_DIAMETER_MIN = 0.1
+const CENTERLINE_TOOL_DIAMETER_MAX = 50
 const CENTERLINE_EDGE_TRIM_MIN = 0
 const CENTERLINE_EDGE_TRIM_MAX = 20
 const CENTERLINE_SIMPLIFY_MIN = 0
 const CENTERLINE_SIMPLIFY_MAX = 5
+const CENTERLINE_SMALL_DETAIL_MIN = 0
+const CENTERLINE_SMALL_DETAIL_MAX = 1
 const DEFAULT_TOOL_DIAMETER = 3
 const CENTERLINE_CACHE_LIMIT = 24
 const LENGTH_EPSILON = 1e-6
@@ -56,6 +63,8 @@ export interface CenterlineGenerationOptions {
 interface CenterlineProcessingOptions {
   edgeTrimDistance: number
   simplifyTolerance?: number
+  rasterPxPerMm?: number
+  rasterMinBranchLengthMm?: number
 }
 
 interface CenterlineEdge {
@@ -71,6 +80,39 @@ interface BranchPath {
   segmentCount: number
 }
 
+interface RecoveredCenterlineDetail {
+  pathData: string
+  engraveType: 'plunge' | 'pocket'
+  fill?: string
+  stroke?: string
+  strokeWidth: number
+  fillRule?: CanvasFillRule
+  renderHint?: {
+    kind: 'plungeCircle'
+    diameter: number
+    centerX: number
+    centerY: number
+  }
+  segmentCount: number
+}
+
+interface CenterlineSourceShape {
+  pathData: string
+  fillRule?: CanvasFillRule
+}
+
+interface SourceLoopCandidate {
+  pathData: string
+  polygon: number[][]
+  bounds: Bounds
+  center: number[]
+  area: number
+  signedArea: number
+  fillRule?: CanvasFillRule
+  containerCount: number
+  containedByOppositeWinding: boolean
+}
+
 interface CenterlineBranch {
   edges: CenterlineEdge[]
   startLeaf: boolean
@@ -81,6 +123,13 @@ interface CenterlineBranch {
 }
 
 type BranchSide = 'start' | 'end'
+
+interface Bounds {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
 
 interface BranchEndpoint {
   branchIndex: number
@@ -96,8 +145,10 @@ export function normalizeCenterlineMetadata(
 ): CenterlineMetadata {
   const scaleAxis = metadata?.scaleAxis
   const samples = metadata?.samples
+  const toolDiameter = metadata?.toolDiameter
   const edgeTrim = metadata?.edgeTrim
   const simplifyTolerance = metadata?.simplifyTolerance
+  const smallDetailTightness = metadata?.smallDetailTightness
 
   return {
     enabled: metadata?.enabled ?? DEFAULT_CENTERLINE_METADATA.enabled,
@@ -115,6 +166,9 @@ export function normalizeCenterlineMetadata(
       CENTERLINE_SAMPLES_MIN,
       CENTERLINE_SAMPLES_MAX,
     )),
+    toolDiameter: toolDiameter !== undefined && Number.isFinite(toolDiameter)
+      ? clamp(toolDiameter, CENTERLINE_TOOL_DIAMETER_MIN, CENTERLINE_TOOL_DIAMETER_MAX)
+      : undefined,
     edgeTrim: clamp(
       edgeTrim !== undefined && Number.isFinite(edgeTrim)
         ? edgeTrim
@@ -129,7 +183,15 @@ export function normalizeCenterlineMetadata(
       CENTERLINE_SIMPLIFY_MIN,
       CENTERLINE_SIMPLIFY_MAX,
     ),
+    smallDetailTightness: clamp(
+      smallDetailTightness !== undefined && Number.isFinite(smallDetailTightness)
+        ? smallDetailTightness
+        : DEFAULT_CENTERLINE_METADATA.smallDetailTightness ?? 0,
+      CENTERLINE_SMALL_DETAIL_MIN,
+      CENTERLINE_SMALL_DETAIL_MAX,
+    ),
     forceRaster: metadata?.forceRaster === true,
+    aiSmoothedPathData: metadata?.aiSmoothedPathData,
   }
 }
 
@@ -179,8 +241,9 @@ export function generateCenterlineForNode(
   }
 
   try {
-    const edgeTrimDistance = trimDistanceFromMetadata(metadata, options.toolDiameter)
-    const cacheKey = centerlineCacheKey(collected.pathData, metadata, edgeTrimDistance)
+    const toolDiameter = toolDiameterFromMetadata(metadata, options.toolDiameter)
+    const edgeTrimDistance = trimDistanceFromMetadata(metadata, toolDiameter)
+    const cacheKey = centerlineCacheKey(collected.sourceShapes, metadata, edgeTrimDistance, toolDiameter)
     const cached = getCachedCenterline(cacheKey)
     if (cached) return cached
 
@@ -203,6 +266,8 @@ export function generateCenterlineForNode(
         ? rasterBackendToResult(collected.pathData, bounds, {
             edgeTrimDistance,
             simplifyTolerance: metadata.simplifyTolerance,
+            rasterPxPerMm: rasterPxPerMmForMetadata(metadata),
+            rasterMinBranchLengthMm: rasterMinBranchLengthForMetadata(metadata),
           })
         : null
       if (rasterResult && rasterResult.pathData) {
@@ -226,6 +291,13 @@ export function generateCenterlineForNode(
       })
       result = matsToPathData(sats, { edgeTrimDistance })
     }
+
+    result = withSmallDetailTuning(result, collected.sourceShapes, metadata)
+    result = withRecoveredDetails(result, collected.sourceShapes, {
+      edgeTrimDistance,
+      toolDiameter,
+      smallDetailTightness: metadata.smallDetailTightness ?? 0,
+    })
 
     setCachedCenterline(cacheKey, result)
     return result
@@ -252,14 +324,83 @@ export function buildCenterlineExportNodes(
 
     if (hasActiveCenterline(node)) {
       const result = generateCenterlineForNode(nodeId, nodesById, options)
-      if (!result.pathData || result.error) {
+      const hasCenterlinePath = Boolean(result.pathData)
+      const recoveredDetails = result.recoveredDetails ?? []
+      if ((!hasCenterlinePath && recoveredDetails.length === 0) || result.error) {
         throw new Error(result.error ?? 'Centerlines could not be generated for G-code export.')
       }
 
       const effectiveMetadata = resolveNodeCncMetadata(node, nodesById)
+      const childIds: string[] = []
+
+      const centerlinePathData = node.centerlineMetadata?.aiSmoothedPathData
+        ?? (result.centerlinePathData !== undefined
+        ? result.centerlinePathData
+        : result.pathData)
+      if (centerlinePathData) {
+        const centerlineId = `${node.id}__centerline`
+        childIds.push(centerlineId)
+        nextNodes[centerlineId] = {
+          id: centerlineId,
+          type: 'path',
+          name: `${node.name || 'Shape'} Centerline`,
+          x: 0,
+          y: 0,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          draggable: node.draggable,
+          locked: node.locked,
+          visible: node.visible,
+          opacity: 1,
+          parentId: node.id,
+          data: centerlinePathData,
+          fill: undefined,
+          stroke: '#000000',
+          strokeWidth: 1,
+          fillRule: undefined,
+          cncMetadata: {
+            ...effectiveMetadata,
+            engraveType: 'contour',
+          },
+        } satisfies PathNode
+      }
+
+      recoveredDetails.forEach((detail, index) => {
+        const detailId = `${node.id}__recovered_${index}`
+        childIds.push(detailId)
+        nextNodes[detailId] = {
+          id: detailId,
+          type: 'path',
+          name: detail.engraveType === 'plunge'
+            ? `${node.name || 'Shape'} Plunge Detail`
+            : `${node.name || 'Shape'} Pocket Detail`,
+          x: 0,
+          y: 0,
+          rotation: 0,
+          scaleX: 1,
+          scaleY: 1,
+          draggable: node.draggable,
+          locked: node.locked,
+          visible: node.visible,
+          opacity: 1,
+          parentId: node.id,
+          data: detail.pathData,
+          fill: detail.fill,
+          stroke: detail.stroke,
+          strokeWidth: detail.strokeWidth,
+          fillRule: detail.fillRule,
+          renderHint: detail.renderHint,
+          cncMetadata: {
+            ...effectiveMetadata,
+            engraveType: detail.engraveType,
+          },
+        } satisfies PathNode
+      })
+
       nextNodes[nodeId] = {
         id: node.id,
-        type: 'path',
+        type: 'group',
         name: `${node.name || 'Shape'} Centerline`,
         x: node.x,
         y: node.y,
@@ -271,16 +412,11 @@ export function buildCenterlineExportNodes(
         visible: node.visible,
         opacity: 1,
         parentId: node.parentId,
-        data: result.pathData,
-        fill: undefined,
-        stroke: '#000000',
-        strokeWidth: 1,
-        fillRule: undefined,
+        childIds,
         cncMetadata: {
           ...effectiveMetadata,
-          engraveType: 'contour',
         },
-      } satisfies PathNode
+      } satisfies GroupNode
       return
     }
 
@@ -304,6 +440,7 @@ export function buildCenterlineExportNodes(
 
 interface CollectResult {
   pathData: string[]
+  sourceShapes: CenterlineSourceShape[]
   error: string | null
 }
 
@@ -312,6 +449,7 @@ function collectCenterlinePathData(
   nodesById: Record<string, CanvasNode>,
 ): CollectResult {
   const pathData: string[] = []
+  const sourceShapes: CenterlineSourceShape[] = []
   let error: string | null = null
 
   const visit = (nodeId: string, parentMatrix: Matrix, includeOwnTransform: boolean): void => {
@@ -341,17 +479,21 @@ function collectCenterlinePathData(
 
     if (normalized.pathData) {
       pathData.push(normalized.pathData)
+      sourceShapes.push({
+        pathData: normalized.pathData,
+        fillRule: normalized.fillRule,
+      })
     }
   }
 
   visit(rootId, identityMatrix(), false)
-  return { pathData, error }
+  return { pathData, sourceShapes, error }
 }
 
 function normalizeSupportedPath(
   node: PathNode,
   matrix: Matrix,
-): { pathData: string | null; error: string | null } {
+): { pathData: string | null; fillRule?: CanvasFillRule; error: string | null } {
   if (!node.fill) {
     return { pathData: null, error: 'Centerlines currently require filled paths.' }
   }
@@ -369,6 +511,7 @@ function normalizeSupportedPath(
         .matrix(matrix)
         .round(3)
         .toString(),
+      fillRule: node.fillRule,
       error: null,
     }
   } catch (error) {
@@ -392,28 +535,667 @@ function matOptionsForMetadata(metadata: CenterlineMetadata): MatOptions {
 
 function trimDistanceFromMetadata(
   metadata: CenterlineMetadata,
-  toolDiameter: number | undefined,
+  toolDiameter: number,
 ): number {
   const normalized = normalizeCenterlineMetadata(metadata)
-  const diameter = Number.isFinite(toolDiameter) && toolDiameter !== undefined
-    ? toolDiameter
+  return Math.max(0, toolDiameter) * 0.5 * normalized.edgeTrim
+}
+
+function toolDiameterFromMetadata(
+  metadata: CenterlineMetadata,
+  fallback: number | undefined,
+): number {
+  const normalized = normalizeCenterlineMetadata(metadata)
+  if (normalized.toolDiameter !== undefined) return normalized.toolDiameter
+  return Number.isFinite(fallback) && fallback !== undefined
+    ? clamp(fallback, CENTERLINE_TOOL_DIAMETER_MIN, CENTERLINE_TOOL_DIAMETER_MAX)
     : DEFAULT_TOOL_DIAMETER
-  return Math.max(0, diameter) * 0.5 * normalized.edgeTrim
+}
+
+function rasterPxPerMmForMetadata(metadata: CenterlineMetadata): number {
+  const normalized = normalizeCenterlineMetadata(metadata)
+  const scaleFactor = normalized.scaleAxis / DEFAULT_CENTERLINE_METADATA.scaleAxis
+  return clamp(6 + normalized.samples * 1.4 * scaleFactor, 5, 32)
+}
+
+function rasterMinBranchLengthForMetadata(metadata: CenterlineMetadata): number {
+  const normalized = normalizeCenterlineMetadata(metadata)
+  return clamp(2.35 - normalized.samples * 0.11, 0.7, 2.1)
 }
 
 function centerlineCacheKey(
-  pathData: string[],
+  sourceShapes: CenterlineSourceShape[],
   metadata: CenterlineMetadata,
   edgeTrimDistance: number,
+  toolDiameter: number,
 ): string {
   return JSON.stringify({
-    pathData,
+    sourceShapes,
     scaleAxis: metadata.scaleAxis,
     samples: metadata.samples,
+    toolDiameter,
     edgeTrimDistance,
     simplifyTolerance: metadata.simplifyTolerance,
+    smallDetailTightness: metadata.smallDetailTightness ?? 0,
     forceRaster: metadata.forceRaster === true,
   })
+}
+
+function withSmallDetailTuning(
+  result: CenterlineResult,
+  sourceShapes: CenterlineSourceShape[],
+  metadata: CenterlineMetadata,
+): CenterlineResult {
+  const tightness = normalizeCenterlineMetadata(metadata).smallDetailTightness ?? 0
+  if (tightness <= 0 || !result.pathData) return result
+
+  const sourceBounds = boundsFromSourceShapes(sourceShapes)
+  if (!sourceBounds) return result
+
+  const sourceMaxDimension = Math.max(
+    sourceBounds.maxX - sourceBounds.minX,
+    sourceBounds.maxY - sourceBounds.minY,
+  )
+  if (sourceMaxDimension <= LENGTH_EPSILON) return result
+
+  const tunedPathData = tuneSmallDetailPathData(result.pathData, tightness, sourceMaxDimension)
+  if (!tunedPathData || tunedPathData === result.pathData) return result
+
+  return {
+    ...result,
+    pathData: tunedPathData,
+  }
+}
+
+function tuneSmallDetailPathData(
+  pathData: string,
+  tightness: number,
+  sourceMaxDimension: number,
+): string {
+  const normalizedTightness = clamp(tightness, CENTERLINE_SMALL_DETAIL_MIN, CENTERLINE_SMALL_DETAIL_MAX)
+  if (normalizedTightness <= 0) return pathData
+
+  const subpaths = pathDataToBezierSubpaths(pathData)
+  if (subpaths.length === 0) return pathData
+
+  const maxDetailDimension = Math.max(8, sourceMaxDimension * 0.22)
+  const scale = 1 - normalizedTightness * 0.45
+  const simplifyTolerance = normalizedTightness * 1.2
+  const tuned = subpaths.map((subpath) => {
+    const bounds = boundsFromBeziers(subpath.beziers)
+    if (!bounds) return subpath
+    const maxDimension = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY)
+    if (maxDimension <= LENGTH_EPSILON || maxDimension > maxDetailDimension) return subpath
+
+    let beziers = scaleBeziersAround(
+      subpath.beziers,
+      [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2],
+      scale,
+    )
+    if (simplifyTolerance > 0.05) {
+      beziers = simplifyBeziersToPolyline(beziers, simplifyTolerance, subpath.closed)
+    }
+    return { ...subpath, beziers }
+  })
+
+  const rendered = bezierSubpathsToPathData(tuned)
+  return rendered || pathData
+}
+
+interface BezierSubpath {
+  beziers: Bezier[]
+  closed: boolean
+}
+
+function pathDataToBezierSubpaths(pathData: string): BezierSubpath[] {
+  const subpaths: BezierSubpath[] = []
+  let current: Bezier[] = []
+  let subpathStart: number[] | null = null
+  let currentPoint: number[] | null = null
+  let closed = false
+
+  const flush = () => {
+    if (current.length > 0) {
+      subpaths.push({ beziers: current, closed })
+    }
+    current = []
+    subpathStart = null
+    currentPoint = null
+    closed = false
+  }
+
+  try {
+    svgpath(pathData)
+      .unarc()
+      .unshort()
+      .abs()
+      .iterate((segment, _index, x, y) => {
+        const command = segment[0]
+        if (command === 'M') {
+          flush()
+          currentPoint = [Number(segment[1]), Number(segment[2])]
+          subpathStart = [...currentPoint]
+          return
+        }
+
+        if (!currentPoint) {
+          currentPoint = [x, y]
+          subpathStart = [...currentPoint]
+        }
+
+        if (command === 'L') {
+          const end = [Number(segment[1]), Number(segment[2])]
+          current.push([currentPoint, end])
+          currentPoint = end
+          return
+        }
+
+        if (command === 'H') {
+          const end = [Number(segment[1]), currentPoint[1]]
+          current.push([currentPoint, end])
+          currentPoint = end
+          return
+        }
+
+        if (command === 'V') {
+          const end = [currentPoint[0], Number(segment[1])]
+          current.push([currentPoint, end])
+          currentPoint = end
+          return
+        }
+
+        if (command === 'Q') {
+          const end = [Number(segment[3]), Number(segment[4])]
+          current.push([
+            currentPoint,
+            [Number(segment[1]), Number(segment[2])],
+            end,
+          ])
+          currentPoint = end
+          return
+        }
+
+        if (command === 'C') {
+          const end = [Number(segment[5]), Number(segment[6])]
+          current.push([
+            currentPoint,
+            [Number(segment[1]), Number(segment[2])],
+            [Number(segment[3]), Number(segment[4])],
+            end,
+          ])
+          currentPoint = end
+          return
+        }
+
+        if (command === 'Z' && subpathStart && currentPoint) {
+          if (distance(currentPoint, subpathStart) > LENGTH_EPSILON) {
+            current.push([currentPoint, subpathStart])
+          }
+          closed = true
+          flush()
+        }
+      })
+  } catch {
+    return []
+  }
+
+  flush()
+  return subpaths
+}
+
+function bezierSubpathsToPathData(subpaths: BezierSubpath[]): string {
+  return subpaths
+    .map((subpath) => {
+      const data = beziersToContinuousPathData(subpath.beziers)
+      return data && subpath.closed ? `${data} Z` : data
+    })
+    .filter(Boolean)
+    .join(' ')
+}
+
+function scaleBeziersAround(beziers: Bezier[], center: number[], scale: number): Bezier[] {
+  return beziers.map((bezier) =>
+    bezier.map((point) => [
+      center[0] + (point[0] - center[0]) * scale,
+      center[1] + (point[1] - center[1]) * scale,
+    ]),
+  )
+}
+
+function simplifyBeziersToPolyline(
+  beziers: Bezier[],
+  tolerance: number,
+  closed: boolean,
+): Bezier[] {
+  const points = sampleBeziersAsPolyline(beziers, closed)
+  if (points.length < 2) return beziers
+  const simplified = rdpSimplify(points, tolerance)
+  if (simplified.length < 2) return beziers
+
+  const lineBeziers: Bezier[] = []
+  for (let i = 1; i < simplified.length; i++) {
+    lineBeziers.push([simplified[i - 1], simplified[i]])
+  }
+  if (closed && distance(simplified[simplified.length - 1], simplified[0]) > LENGTH_EPSILON) {
+    lineBeziers.push([simplified[simplified.length - 1], simplified[0]])
+  }
+  return lineBeziers
+}
+
+function sampleBeziersAsPolyline(beziers: Bezier[], closed: boolean): Array<[number, number]> {
+  const points: Array<[number, number]> = []
+  const first = beziers[0]?.[0]
+  if (first) points.push([first[0], first[1]])
+  for (const bezier of beziers) {
+    const steps = Math.max(2, Math.ceil(bezierApproxLength(bezier) / 1.5))
+    for (let i = 1; i <= steps; i++) {
+      const point = pointAtBezier(bezier, i / steps)
+      points.push([point[0], point[1]])
+    }
+  }
+  if (closed && points.length > 1 && distance(points[0], points[points.length - 1]) <= LENGTH_EPSILON) {
+    points.pop()
+  }
+  return points
+}
+
+function boundsFromBeziers(beziers: Bezier[]): Bounds | null {
+  const points = beziers.flatMap((bezier) => bezier)
+  return boundsFromPoints(points)
+}
+
+function boundsFromSourceShapes(sourceShapes: CenterlineSourceShape[]): Bounds | null {
+  let combined: Bounds | null = null
+  for (const source of sourceShapes) {
+    try {
+      const loops = getPathsFromStr(source.pathData)
+      for (const loop of loops) {
+        const bounds = boundsFromPoints(loopToPolygon(loop))
+        if (!bounds) continue
+        combined = combined
+          ? {
+              minX: Math.min(combined.minX, bounds.minX),
+              minY: Math.min(combined.minY, bounds.minY),
+              maxX: Math.max(combined.maxX, bounds.maxX),
+              maxY: Math.max(combined.maxY, bounds.maxY),
+            }
+          : bounds
+      }
+    } catch {
+      continue
+    }
+  }
+  return combined
+}
+
+function withRecoveredDetails(
+  result: CenterlineResult,
+  sourceShapes: CenterlineSourceShape[],
+  options: {
+    edgeTrimDistance: number
+    toolDiameter?: number
+    smallDetailTightness?: number
+  },
+): CenterlineResult {
+  const candidates = collectSourceLoopCandidates(sourceShapes)
+  if (candidates.length === 0) {
+    return result
+  }
+
+  const centerlinePathData = result.pathData
+  const emittedPoints = centerlinePathData ? samplePathDataPoints(centerlinePathData) : []
+  const largestArea = candidates.reduce((max, candidate) => Math.max(max, candidate.area), 0)
+  const recoveredDetails = candidates
+    .filter((candidate) => !candidateIsCovered(candidate, emittedPoints))
+    .map((candidate) => recoveredDetailForCandidate(candidate, options, largestArea))
+    .filter((detail): detail is RecoveredCenterlineDetail => Boolean(detail))
+
+  if (recoveredDetails.length === 0) {
+    return result
+  }
+
+  const recoveredPathData = recoveredDetails.map((detail) => detail.pathData).join(' ')
+  const pathData = [centerlinePathData, recoveredPathData].filter(Boolean).join(' ') || null
+  const recoveredSegmentCount = recoveredDetails.reduce(
+    (sum, detail) => sum + detail.segmentCount,
+    0,
+  )
+
+  return {
+    ...result,
+    pathData,
+    centerlinePathData,
+    segmentCount: result.segmentCount + recoveredSegmentCount,
+    branchCount: result.branchCount + recoveredDetails.length,
+    error: pathData ? null : result.error,
+    recoveredDetails,
+  }
+}
+
+function collectSourceLoopCandidates(sourceShapes: CenterlineSourceShape[]): SourceLoopCandidate[] {
+  const candidates: SourceLoopCandidate[] = []
+
+  for (const source of sourceShapes) {
+    let loops: BezierLoop[]
+    try {
+      loops = getPathsFromStr(source.pathData)
+    } catch {
+      continue
+    }
+
+    const infos = loops
+      .map((loop) => {
+        const polygon = loopToPolygon(loop)
+        if (polygon.length < 3) return null
+        const bounds = boundsFromPoints(polygon)
+        if (!bounds) return null
+        const signedArea = polygonArea(polygon)
+        const area = Math.abs(signedArea)
+        if (area <= LENGTH_EPSILON) return null
+        const centroid = polygonCentroid(polygon, signedArea)
+        const center = pointInPolygon(centroid, polygon)
+          ? centroid
+          : [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2]
+        return {
+          loop,
+          polygon,
+          bounds,
+          center,
+          area,
+          signedArea,
+        }
+      })
+      .filter((info): info is {
+        loop: BezierLoop
+        polygon: number[][]
+        bounds: Bounds
+        center: number[]
+        area: number
+        signedArea: number
+      } => Boolean(info))
+
+    infos.forEach((info, index) => {
+      const containers = infos.filter((other, otherIndex) => {
+        if (otherIndex === index) return false
+        if (other.area <= info.area * 1.01) return false
+        return pointInPolygon(info.center, other.polygon) || pointInPolygon(info.polygon[0], other.polygon)
+      })
+      const containerCount = containers.length
+      const containedByOppositeWinding = containers.some(
+        (other) => Math.sign(other.signedArea) !== Math.sign(info.signedArea),
+      )
+
+      // For even-odd paths, odd containment means this loop is a hole. For
+      // non-zero paths, opposite winding is the common hole signal. Skipping
+      // holes here prevents counters inside letters or rings from becoming
+      // accidental drill dots.
+      const isHole = source.fillRule === 'evenodd'
+        ? containerCount % 2 === 1
+        : containedByOppositeWinding
+      if (isHole) return
+
+      const pathData = `${beziersToContinuousPathData(info.loop)} Z`
+      candidates.push({
+        pathData,
+        polygon: info.polygon,
+        bounds: info.bounds,
+        center: info.center,
+        area: info.area,
+        signedArea: info.signedArea,
+        fillRule: source.fillRule,
+        containerCount,
+        containedByOppositeWinding,
+      })
+    })
+  }
+
+  return candidates
+}
+
+function recoveredDetailForCandidate(
+  candidate: SourceLoopCandidate,
+  options: {
+    edgeTrimDistance: number
+    toolDiameter?: number
+    smallDetailTightness?: number
+  },
+  largestArea: number,
+): RecoveredCenterlineDetail | null {
+  const toolDiameter = Number.isFinite(options.toolDiameter) && options.toolDiameter !== undefined
+    ? Math.max(options.toolDiameter, 0)
+    : DEFAULT_TOOL_DIAMETER
+
+  if (isRoundPlungeCandidate(candidate, toolDiameter, options.edgeTrimDistance, largestArea)) {
+    const markerRadius = clamp(
+      Math.min(candidateMaxDimension(candidate) * 0.08, Math.max(toolDiameter, 0.5) * 0.08),
+      0.05,
+      0.35,
+    )
+    return {
+      pathData: circlePathData(candidate.center[0], candidate.center[1], markerRadius),
+      engraveType: 'plunge',
+      fill: undefined,
+      stroke: '#000000',
+      strokeWidth: Math.max(markerRadius * 0.5, 0.05),
+      renderHint: {
+        kind: 'plungeCircle',
+        diameter: Math.max(toolDiameter, markerRadius * 2),
+        centerX: candidate.center[0],
+        centerY: candidate.center[1],
+      },
+      segmentCount: 2,
+    }
+  }
+
+  const tunedPathData = tuneSmallDetailPathData(
+    candidate.pathData,
+    options.smallDetailTightness ?? 0,
+    candidateMaxDimension(candidate) / 0.22,
+  )
+
+  return {
+    pathData: tunedPathData,
+    engraveType: 'pocket',
+    fill: '#000000',
+    stroke: undefined,
+    strokeWidth: 0,
+    fillRule: candidate.fillRule,
+    segmentCount: Math.max(1, candidate.polygon.length),
+  }
+}
+
+function candidateIsCovered(
+  candidate: SourceLoopCandidate,
+  emittedPoints: number[][],
+): boolean {
+  if (emittedPoints.length === 0) return false
+  return emittedPoints.some((point) => pointInsideCandidate(point, candidate))
+}
+
+function pointInsideCandidate(point: number[], candidate: SourceLoopCandidate): boolean {
+  const margin = 0.15
+  if (
+    point[0] < candidate.bounds.minX - margin ||
+    point[0] > candidate.bounds.maxX + margin ||
+    point[1] < candidate.bounds.minY - margin ||
+    point[1] > candidate.bounds.maxY + margin
+  ) {
+    return false
+  }
+
+  if (pointInPolygon(point, candidate.polygon)) return true
+  return distanceToPolygon(point, candidate.polygon) <= margin
+}
+
+function isRoundPlungeCandidate(
+  candidate: SourceLoopCandidate,
+  toolDiameter: number,
+  edgeTrimDistance: number,
+  largestArea: number,
+): boolean {
+  const width = candidate.bounds.maxX - candidate.bounds.minX
+  const height = candidate.bounds.maxY - candidate.bounds.minY
+  const maxDimension = Math.max(width, height)
+  const minDimension = Math.min(width, height)
+  if (maxDimension <= LENGTH_EPSILON || minDimension <= LENGTH_EPSILON) return false
+
+  const aspect = minDimension / maxDimension
+  if (aspect < 0.72) return false
+
+  const perimeter = polygonPerimeter(candidate.polygon)
+  if (perimeter <= LENGTH_EPSILON) return false
+  const circularity = (4 * Math.PI * candidate.area) / (perimeter * perimeter)
+  if (circularity < 0.82) return false
+
+  const absoluteLimit = Math.max(toolDiameter * 8, edgeTrimDistance * 8, 32)
+  const smallRelativeToArtwork = largestArea > candidate.area * 1.5 && candidate.area <= largestArea * 0.08
+  return maxDimension <= absoluteLimit || smallRelativeToArtwork
+}
+
+function samplePathDataPoints(pathData: string): number[][] {
+  const points: number[][] = []
+  try {
+    svgpath(pathData)
+      .unarc()
+      .unshort()
+      .abs()
+      .iterate((segment, _index, x, y) => {
+        const command = segment[0]
+        if (command === 'M') {
+          points.push([Number(segment[1]), Number(segment[2])])
+          return
+        }
+        if (command === 'L') {
+          sampleLine([x, y], [Number(segment[1]), Number(segment[2])], points)
+          return
+        }
+        if (command === 'H') {
+          sampleLine([x, y], [Number(segment[1]), y], points)
+          return
+        }
+        if (command === 'V') {
+          sampleLine([x, y], [x, Number(segment[1])], points)
+          return
+        }
+        if (command === 'C') {
+          const bezier: Bezier = [
+            [x, y],
+            [Number(segment[1]), Number(segment[2])],
+            [Number(segment[3]), Number(segment[4])],
+            [Number(segment[5]), Number(segment[6])],
+          ]
+          sampleBezier(bezier, points)
+          return
+        }
+        if (command === 'Q') {
+          const bezier: Bezier = [
+            [x, y],
+            [Number(segment[1]), Number(segment[2])],
+            [Number(segment[3]), Number(segment[4])],
+          ]
+          sampleBezier(bezier, points)
+        }
+      })
+  } catch {
+    return []
+  }
+  return points
+}
+
+function sampleLine(from: number[], to: number[], out: number[][]): void {
+  const steps = Math.max(2, Math.ceil(distance(from, to) / 3))
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps
+    out.push(lerpPoint(from, to, t))
+  }
+}
+
+function sampleBezier(bezier: Bezier, out: number[][]): void {
+  const steps = Math.max(6, Math.ceil(bezierApproxLength(bezier) / 3))
+  for (let i = 1; i <= steps; i++) {
+    out.push(pointAtBezier(bezier, i / steps))
+  }
+}
+
+function boundsFromPoints(points: number[][]): Bounds | null {
+  if (points.length === 0) return null
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const point of points) {
+    if (point[0] < minX) minX = point[0]
+    if (point[1] < minY) minY = point[1]
+    if (point[0] > maxX) maxX = point[0]
+    if (point[1] > maxY) maxY = point[1]
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null
+  return { minX, minY, maxX, maxY }
+}
+
+function polygonCentroid(points: number[][], signedArea: number): number[] {
+  if (Math.abs(signedArea) <= LENGTH_EPSILON) {
+    const bounds = boundsFromPoints(points)
+    return bounds
+      ? [(bounds.minX + bounds.maxX) / 2, (bounds.minY + bounds.maxY) / 2]
+      : [0, 0]
+  }
+
+  let cx = 0
+  let cy = 0
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]
+    const b = points[(i + 1) % points.length]
+    const cross = a[0] * b[1] - b[0] * a[1]
+    cx += (a[0] + b[0]) * cross
+    cy += (a[1] + b[1]) * cross
+  }
+  const factor = 1 / (6 * signedArea)
+  return [cx * factor, cy * factor]
+}
+
+function polygonPerimeter(points: number[][]): number {
+  let sum = 0
+  for (let i = 0; i < points.length; i++) {
+    sum += distance(points[i], points[(i + 1) % points.length])
+  }
+  return sum
+}
+
+function distanceToPolygon(point: number[], polygon: number[][]): number {
+  let minDistance = Infinity
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i]
+    const b = polygon[(i + 1) % polygon.length]
+    minDistance = Math.min(minDistance, distanceToSegment(point, a, b))
+  }
+  return minDistance
+}
+
+function distanceToSegment(point: number[], a: number[], b: number[]): number {
+  const dx = b[0] - a[0]
+  const dy = b[1] - a[1]
+  const lenSq = dx * dx + dy * dy
+  if (lenSq <= LENGTH_EPSILON) return distance(point, a)
+  const t = clamp(((point[0] - a[0]) * dx + (point[1] - a[1]) * dy) / lenSq, 0, 1)
+  return distance(point, [a[0] + dx * t, a[1] + dy * t])
+}
+
+function candidateMaxDimension(candidate: SourceLoopCandidate): number {
+  return Math.max(
+    candidate.bounds.maxX - candidate.bounds.minX,
+    candidate.bounds.maxY - candidate.bounds.minY,
+  )
+}
+
+function circlePathData(cx: number, cy: number, radius: number): string {
+  const left = cx - radius
+  const right = cx + radius
+  return [
+    `M ${fmt(left)} ${fmt(cy)}`,
+    `A ${fmt(radius)} ${fmt(radius)} 0 1 0 ${fmt(right)} ${fmt(cy)}`,
+    `A ${fmt(radius)} ${fmt(radius)} 0 1 0 ${fmt(left)} ${fmt(cy)}`,
+  ].join(' ')
 }
 
 // -----------------------------------------------------------------------------
@@ -527,7 +1309,10 @@ function rasterBackendToResult(
 ): CenterlineResult | null {
   let raster
   try {
-    raster = generateRasterSkeleton(pathData, bounds)
+    raster = generateRasterSkeleton(pathData, bounds, {
+      pxPerMm: options.rasterPxPerMm,
+      minBranchLengthMm: options.rasterMinBranchLengthMm,
+    })
   } catch (err) {
     if (typeof console !== 'undefined') {
       console.warn('[centerline] raster backend failed', err)

@@ -574,16 +574,20 @@ const readCenterlineMetadata = (element: Element): CenterlineMetadata | undefine
   const enabledRaw = element.getAttribute('data-centerline-enabled')
   const scaleAxis = parseNumber(element.getAttribute('data-centerline-scale-axis'))
   const samples = parseNumber(element.getAttribute('data-centerline-samples'))
+  const toolDiameter = parseNumber(element.getAttribute('data-centerline-tool-diameter'))
   const edgeTrim = parseNumber(element.getAttribute('data-centerline-edge-trim'))
   const simplifyTolerance = parseNumber(element.getAttribute('data-centerline-simplify-tolerance'))
+  const smallDetailTightness = parseNumber(element.getAttribute('data-centerline-small-detail-tightness'))
   const forceRasterRaw = element.getAttribute('data-centerline-force-raster')
 
   if (
     enabledRaw == null &&
     scaleAxis == null &&
     samples == null &&
+    toolDiameter == null &&
     edgeTrim == null &&
     simplifyTolerance == null &&
+    smallDetailTightness == null &&
     forceRasterRaw == null
   ) {
     return undefined
@@ -593,8 +597,10 @@ const readCenterlineMetadata = (element: Element): CenterlineMetadata | undefine
     enabled: enabledRaw == null ? true : enabledRaw.trim().toLowerCase() !== 'false',
     scaleAxis: Math.min(4, Math.max(1, scaleAxis ?? 1.5)),
     samples: Math.round(Math.min(15, Math.max(3, samples ?? 3))),
+    toolDiameter: toolDiameter == null ? undefined : Math.min(50, Math.max(0.1, toolDiameter)),
     edgeTrim: Math.min(20, Math.max(0, edgeTrim ?? 1)),
     simplifyTolerance: Math.min(5, Math.max(0, simplifyTolerance ?? 0.5)),
+    smallDetailTightness: Math.min(1, Math.max(0, smallDetailTightness ?? 0)),
     forceRaster: forceRasterRaw != null && forceRasterRaw.trim().toLowerCase() === 'true',
   }
 }

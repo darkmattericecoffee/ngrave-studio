@@ -370,6 +370,7 @@ function DesignTabContent() {
             <CenterlinesEnabledPanel
               nodeId={firstNode.id}
               meta={firstNode.centerlineMetadata}
+              materialToolDiameter={toolDiameter}
               centerlineResult={centerlineResult}
               onUpdate={(patch) => updateCenterlineMetadata(firstNode.id, patch)}
               onRemove={() => disableCenterline(firstNode.id)}
@@ -419,12 +420,14 @@ type AiStatus = 'idle' | 'streaming' | 'error'
 function CenterlinesEnabledPanel({
   nodeId,
   meta,
+  materialToolDiameter,
   centerlineResult,
   onUpdate,
   onRemove,
 }: {
   nodeId: string
   meta: CenterlineMetadata
+  materialToolDiameter: number
   centerlineResult: ReturnType<typeof generateCenterlineForNode> | null
   onUpdate: (patch: Partial<CenterlineMetadata>) => void
   onRemove: () => void
@@ -442,6 +445,8 @@ function CenterlinesEnabledPanel({
   const quality = qualityFromMeta(meta)
   const isStreaming = aiStatus === 'streaming'
   const hasAiSmoothed = Boolean(meta.aiSmoothedPathData)
+  const effectiveToolDiameter = meta.toolDiameter ?? materialToolDiameter
+  const toolDiameterMax = Math.max(10, materialToolDiameter * 3, effectiveToolDiameter)
 
   const setQuality = (q: number) => {
     const [scaleAxis, samples] = QUALITY_MAP[q - 1]
@@ -457,8 +462,9 @@ function CenterlinesEnabledPanel({
     const apiKey = localStorage.getItem(OPENROUTER_API_KEY_STORAGE)?.trim()
     if (!apiKey) { setShowKeyInput(true); return }
 
-    // Use already-stored AI path OR the freshly generated one
-    const pathData = meta.aiSmoothedPathData ?? centerlineResult?.pathData
+    // Smooth only the true centerline strokes. Recovered plunge/pocket details
+    // keep their own generated geometry and CNC metadata.
+    const pathData = meta.aiSmoothedPathData ?? centerlineResult?.centerlinePathData ?? centerlineResult?.pathData
     if (!pathData) { setErrorMsg('No centerline path to smooth'); return }
 
     setAiStatus('streaming')
@@ -524,6 +530,38 @@ function CenterlinesEnabledPanel({
         </div>
       </div>
 
+      {/* Centerline bit slider */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">Centerline bit</p>
+          <span className="text-xs text-foreground">
+            {round2(effectiveToolDiameter)}
+            <span className="ml-1 text-muted-foreground">mm</span>
+          </span>
+        </div>
+        <input
+          type="range" min={0.1} max={toolDiameterMax} step={0.1}
+          value={effectiveToolDiameter}
+          disabled={isStreaming}
+          className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          onChange={(e) => onUpdate({ toolDiameter: Number(e.target.value) })}
+        />
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+          <span>Fine</span>
+          {meta.toolDiameter !== undefined ? (
+            <button
+              type="button"
+              className="hover:text-foreground"
+              onClick={() => onUpdate({ toolDiameter: undefined })}
+            >
+              Use material bit ({round2(materialToolDiameter)} mm)
+            </button>
+          ) : (
+            <span>Using material bit</span>
+          )}
+        </div>
+      </div>
+
       {/* Trim slider */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between">
@@ -563,6 +601,26 @@ function CenterlinesEnabledPanel({
         />
         <div className="flex justify-between text-[10px] text-muted-foreground">
           <span>More nodes</span><span>Fewer nodes</span>
+        </div>
+      </div>
+
+      {/* Small detail slider */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-muted-foreground">Small details</p>
+          <span className="text-xs text-foreground">
+            {round2(meta.smallDetailTightness ?? 0)}
+          </span>
+        </div>
+        <input
+          type="range" min={0} max={1} step={0.05}
+          value={meta.smallDetailTightness ?? 0}
+          disabled={isStreaming}
+          className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-border accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+          onChange={(e) => onUpdate({ smallDetailTightness: Number(e.target.value) })}
+        />
+        <div className="flex justify-between text-[10px] text-muted-foreground">
+          <span>Original</span><span>Tighter</span>
         </div>
       </div>
 

@@ -22,6 +22,7 @@ export interface Settings {
     target_depth: number;
     max_stepdown: number;
     cut_feedrate: number;
+    shallow_cut_feedrate: number | null;
     plunge_feedrate: number;
     stepover: number;
     max_fill_passes: number | null;
