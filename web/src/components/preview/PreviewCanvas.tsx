@@ -9,6 +9,7 @@ import { clearGroup, createLighting, createGrid, createToolMarker, createActiveP
 import { createStockMeshLayers, createStockMaterialHandle, type StockMaterialHandle } from './stockMesh'
 import { createMergedSweepMeshes } from './sweepMesh'
 import { buildToolpathLines, updateDrawRange, type ToolpathLineData } from './toolpathLines'
+import { buildCutOrderLabels, disposeCutOrderLabels } from './cutOrderLabels'
 import type { ToolMarker } from './sceneHelpers'
 
 export function PreviewCanvas() {
@@ -22,6 +23,8 @@ export function PreviewCanvas() {
   const showStock = useEditorStore((s) => s.preview.showStock)
   const showRapidMoves = useEditorStore((s) => s.preview.showRapidMoves)
   const showSvgOverlay = useEditorStore((s) => s.preview.showSvgOverlay)
+  const showCutOrder = useEditorStore((s) => s.preview.showCutOrder)
+  const setPlaybackDistance = useEditorStore((s) => s.setPlaybackDistance)
   const materialPreset = useEditorStore((s) => s.preview.materialPreset)
   const previewToolShape = useEditorStore((s) => s.preview.toolShape)
 
@@ -60,25 +63,25 @@ export function PreviewCanvas() {
   const activePathLineRef = useRef<THREE.Line | null>(null)
   const toolpathLineDataRef = useRef<ToolpathLineData | null>(null)
 
-  // One shared stock material for the entire preview session. Reusing it
-  // across rebuilds keeps the Three.js shader program cache bounded to a
-  // single compiled program regardless of how many times we rebuild.
+  // Shared stock material. We recreate the handle whenever the texture
+  // changes so USE_MAP is baked into the initial shader compile — assigning
+  // `.map` + `needsUpdate` after construction was unreliable and caused the
+  // wood texture to not show. The previous handle is disposed on swap.
   const stockMaterialRef = useRef<StockMaterialHandle | null>(null)
   if (!stockMaterialRef.current) {
     stockMaterialRef.current = createStockMaterialHandle()
   }
+  useEffect(() => {
+    stockMaterialRef.current?.dispose()
+    stockMaterialRef.current = createStockMaterialHandle(stockTexture ?? undefined)
+    requestRender()
+  }, [stockTexture, requestRender])
   useEffect(() => {
     return () => {
       stockMaterialRef.current?.dispose()
       stockMaterialRef.current = null
     }
   }, [])
-
-  // Push texture changes into the shared material.
-  useEffect(() => {
-    stockMaterialRef.current?.setTexture(stockTexture ?? undefined)
-    requestRender()
-  }, [stockTexture, requestRender])
 
   // Set up lighting and grid on first mount or when material size changes
   useEffect(() => {
@@ -148,7 +151,7 @@ export function PreviewCanvas() {
     state.sweepGroup.add(sweepMesh)
 
     requestRender()
-  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, previewToolShape, requestRender])
+  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, previewToolShape, stockTexture, requestRender])
 
   // Auto-fit camera to toolpath bounding box when GCode is generated
   useEffect(() => {
@@ -219,6 +222,59 @@ export function PreviewCanvas() {
     state.overlayGroup.visible = showSvgOverlay
     requestRender()
   }, [sceneRef, showSvgOverlay, requestRender])
+
+  // Cut-order badges. Rebuilt whenever the toolpaths change or the toggle
+  // turns on; torn down (with texture disposal) when the toggle turns off.
+  useEffect(() => {
+    const state = sceneRef.current
+    if (!state) return
+
+    disposeCutOrderLabels(state.cutOrderGroup)
+
+    if (showCutOrder && toolpaths && toolpaths.length > 0) {
+      const { group } = buildCutOrderLabels(toolpaths)
+      for (const child of [...group.children]) {
+        state.cutOrderGroup.add(child)
+      }
+    }
+
+    requestRender()
+    return () => {
+      disposeCutOrderLabels(state.cutOrderGroup)
+    }
+  }, [sceneRef, toolpaths, showCutOrder, requestRender])
+
+  // Click-to-seek on cut-order badges. Raycast from the pointer into the
+  // cutOrderGroup; on a hit, jump playback to that cut's start distance.
+  useEffect(() => {
+    const state = sceneRef.current
+    if (!state || !showCutOrder) return
+
+    const canvas = state.renderer.domElement
+    const raycaster = new THREE.Raycaster()
+    const pointer = new THREE.Vector2()
+
+    const handleClick = (event: PointerEvent) => {
+      if (state.cutOrderGroup.children.length === 0) return
+      const rect = canvas.getBoundingClientRect()
+      pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
+      pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+      raycaster.setFromCamera(pointer, state.activeCamera)
+      const hits = raycaster.intersectObjects(state.cutOrderGroup.children, false)
+      if (hits.length === 0) return
+      const sprite = hits[0].object
+      const seek = sprite.userData?.seekDistance
+      if (typeof seek === 'number') {
+        event.stopPropagation()
+        setPlaybackDistance(seek)
+      }
+    }
+
+    canvas.addEventListener('pointerdown', handleClick)
+    return () => {
+      canvas.removeEventListener('pointerdown', handleClick)
+    }
+  }, [sceneRef, showCutOrder, setPlaybackDistance])
 
   // Sync tool marker + draw range whenever playback distance changes.
   // This covers scrubbing (user drags the slider) without needing a rAF loop.

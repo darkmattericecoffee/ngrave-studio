@@ -151,11 +151,21 @@ export interface StockMaterialHandle {
   dispose: () => void
 }
 
-export function createStockMaterialHandle(): StockMaterialHandle {
+export function createStockMaterialHandle(texture?: THREE.Texture): StockMaterialHandle {
   const uniforms = { uMaxDepth: { value: 0.01 } }
 
+  if (texture) {
+    texture.wrapS = THREE.RepeatWrapping
+    texture.wrapT = THREE.RepeatWrapping
+    texture.repeat.set(1 / 400, 1 / 400)
+  }
+
+  // Passing the map at construction ensures the initial shader compile
+  // includes USE_MAP. Assigning `.map` after the fact requires a recompile
+  // via `needsUpdate`, which was unreliable — the wood texture vanished.
   const material = new THREE.MeshPhongMaterial({
-    color: 0xcdbb8f,
+    color: texture ? 0xffffff : 0xcdbb8f,
+    map: texture ?? null,
     transparent: true,
     opacity: 0.82,
     shininess: 28,

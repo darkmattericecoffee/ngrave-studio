@@ -9,11 +9,26 @@ import type { RouterBitShape } from '../../types/editor'
 export function disposeMaterial(material: THREE.Material | THREE.Material[]): void {
   if (Array.isArray(material)) {
     for (const entry of material) {
+      disposeMaterialMap(entry)
       entry.dispose()
     }
     return
   }
+  disposeMaterialMap(material)
   material.dispose()
+}
+
+// SpriteMaterials (used for cut-order badges) own per-sprite CanvasTextures.
+// Dispose them alongside the material so clearGroup doesn't leak GPU buffers.
+function disposeMaterialMap(material: THREE.Material): void {
+  const withMap = material as THREE.Material & { map?: THREE.Texture | null }
+  if (withMap.map && typeof withMap.map.dispose === 'function') {
+    // Only dispose canvas-backed textures here; shared/loader textures are owned
+    // by their creators and should not be disposed by clearGroup.
+    if (withMap.map instanceof THREE.CanvasTexture) {
+      withMap.map.dispose()
+    }
+  }
 }
 
 export function clearGroup(group: THREE.Group): void {

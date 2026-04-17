@@ -423,10 +423,12 @@ export function PreviewTabContent() {
   const showStock = useEditorStore((s) => s.preview.showStock)
   const showSvgOverlay = useEditorStore((s) => s.preview.showSvgOverlay)
   const showRapidMoves = useEditorStore((s) => s.preview.showRapidMoves)
+  const showCutOrder = useEditorStore((s) => s.preview.showCutOrder)
   const setCameraType = useEditorStore((s) => s.setCameraType)
   const setShowStock = useEditorStore((s) => s.setShowStock)
   const setShowSvgOverlay = useEditorStore((s) => s.setShowSvgOverlay)
   const setShowRapidMoves = useEditorStore((s) => s.setShowRapidMoves)
+  const setShowCutOrder = useEditorStore((s) => s.setShowCutOrder)
 
   return (
     <div className="space-y-5">
@@ -475,6 +477,15 @@ export function PreviewTabContent() {
               className="rounded border-border"
             />
             Show rapid moves
+          </label>
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={showCutOrder}
+              onChange={(e) => setShowCutOrder(e.target.checked)}
+              className="rounded border-border"
+            />
+            Show cut order badges
           </label>
         </div>
       </section>

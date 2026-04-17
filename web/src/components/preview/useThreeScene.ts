@@ -25,6 +25,7 @@ export interface SceneState {
   toolpathGroup: THREE.Group
   overlayGroup: THREE.Group
   toolMarkerGroup: THREE.Group
+  cutOrderGroup: THREE.Group
 }
 
 export function useThreeScene(
@@ -77,9 +78,66 @@ export function useThreeScene(
     controls.target.set(0, 0, -5)
     controls.enableDamping = true
     controls.dampingFactor = 0.08
+    // Disable OrbitControls' built-in wheel zoom so we can distinguish
+    // trackpad pinch (ctrlKey=true → zoom) from two-finger scroll (pan).
+    controls.enableZoom = false
     controls.addEventListener('change', () => {
       needsRenderRef.current = true
     })
+
+    const PINCH_ZOOM_SENSITIVITY = 0.01
+    const panOffsetTmp = new THREE.Vector3()
+    const panVecTmp = new THREE.Vector3()
+    const handleCanvasWheel = (event: WheelEvent) => {
+      event.preventDefault()
+      const camera = sceneRef.current?.activeCamera ?? activeCamera
+      const element = renderer.domElement
+
+      if (event.ctrlKey) {
+        // Pinch gesture (browser synthesizes ctrlKey for trackpad pinch).
+        const factor = Math.exp(event.deltaY * PINCH_ZOOM_SENSITIVITY)
+        const offset = new THREE.Vector3().subVectors(camera.position, controls.target)
+        if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
+          const ortho = camera as THREE.OrthographicCamera
+          ortho.zoom = Math.max(0.01, ortho.zoom / factor)
+          ortho.updateProjectionMatrix()
+        } else {
+          offset.multiplyScalar(factor)
+          camera.position.copy(controls.target).add(offset)
+        }
+        needsRenderRef.current = true
+        return
+      }
+
+      // Two-finger scroll → pan the camera and target in screen space.
+      panOffsetTmp.set(0, 0, 0)
+      if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
+        const persp = camera as THREE.PerspectiveCamera
+        const targetDistance =
+          camera.position.distanceTo(controls.target) *
+          Math.tan(((persp.fov / 2) * Math.PI) / 180)
+        const panX = (2 * event.deltaX * targetDistance) / element.clientHeight
+        const panY = (2 * event.deltaY * targetDistance) / element.clientHeight
+        panVecTmp.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(-panX)
+        panOffsetTmp.add(panVecTmp)
+        panVecTmp.setFromMatrixColumn(camera.matrix, 1).multiplyScalar(panY)
+        panOffsetTmp.add(panVecTmp)
+      } else {
+        const ortho = camera as THREE.OrthographicCamera
+        const panX =
+          (event.deltaX * (ortho.right - ortho.left)) / ortho.zoom / element.clientWidth
+        const panY =
+          (event.deltaY * (ortho.top - ortho.bottom)) / ortho.zoom / element.clientHeight
+        panVecTmp.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(-panX)
+        panOffsetTmp.add(panVecTmp)
+        panVecTmp.setFromMatrixColumn(camera.matrix, 1).multiplyScalar(panY)
+        panOffsetTmp.add(panVecTmp)
+      }
+      camera.position.add(panOffsetTmp)
+      controls.target.add(panOffsetTmp)
+      needsRenderRef.current = true
+    }
+    renderer.domElement.addEventListener('wheel', handleCanvasWheel, { passive: false })
 
     // Scene groups
     const lightGroup = new THREE.Group()
@@ -89,8 +147,9 @@ export function useThreeScene(
     const toolpathGroup = new THREE.Group()
     const overlayGroup = new THREE.Group()
     const toolMarkerGroup = new THREE.Group()
+    const cutOrderGroup = new THREE.Group()
 
-    scene.add(lightGroup, gridGroup, stockGroup, sweepGroup, toolpathGroup, overlayGroup, toolMarkerGroup)
+    scene.add(lightGroup, gridGroup, stockGroup, sweepGroup, toolpathGroup, overlayGroup, toolMarkerGroup, cutOrderGroup)
 
     const state: SceneState = {
       renderer,
@@ -106,6 +165,7 @@ export function useThreeScene(
       toolpathGroup,
       overlayGroup,
       toolMarkerGroup,
+      cutOrderGroup,
     }
     sceneRef.current = state
 
@@ -146,6 +206,7 @@ export function useThreeScene(
     return () => {
       cancelAnimationFrame(animationIdRef.current)
       resizeObserver.disconnect()
+      renderer.domElement.removeEventListener('wheel', handleCanvasWheel)
       controls.dispose()
 
       // Dispose every geometry, material, and texture held by the scene groups.
@@ -158,6 +219,7 @@ export function useThreeScene(
       clearGroup(toolpathGroup)
       clearGroup(overlayGroup)
       clearGroup(toolMarkerGroup)
+      clearGroup(cutOrderGroup)
 
       // Safety net: anything still parented directly to the scene.
       scene.traverse((node) => {

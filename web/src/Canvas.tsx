@@ -52,6 +52,8 @@ const MAX_ARTBOARD_SIZE = 2000
 const MIN_SCALE = 0.25
 const MAX_SCALE = 4
 const WHEEL_SCALE_BY = 1.02
+const PINCH_ZOOM_SENSITIVITY = 0.01
+const TRACKPAD_PAN_DELTA_THRESHOLD = 50
 const EYEDROPPER_CURSOR_HOTSPOT_X = 3
 const EYEDROPPER_CURSOR_HOTSPOT_Y = 16
 const EYEDROPPER_PICK_FLASH_MS = 140
@@ -1192,11 +1194,29 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     }
 
     const currentViewport = useEditorStore.getState().viewport
-    let zoomDirection = event.evt.deltaY > 0 ? -1 : 1
-    if (event.evt.ctrlKey) {
-      zoomDirection = -zoomDirection
+    const { deltaX, deltaY, ctrlKey } = event.evt
+
+    if (ctrlKey) {
+      // Trackpad pinch gesture (browsers synthesize ctrlKey for pinch).
+      const factor = Math.exp(-deltaY * PINCH_ZOOM_SENSITIVITY)
+      zoomAroundPoint(currentViewport.scale * factor, pointer)
+      return
     }
 
+    const isTrackpadPan =
+      deltaX !== 0 ||
+      !Number.isInteger(deltaY) ||
+      Math.abs(deltaY) < TRACKPAD_PAN_DELTA_THRESHOLD
+
+    if (isTrackpadPan) {
+      setViewport({
+        x: currentViewport.x - deltaX,
+        y: currentViewport.y - deltaY,
+      })
+      return
+    }
+
+    const zoomDirection = deltaY > 0 ? -1 : 1
     const nextScale =
       zoomDirection > 0
         ? currentViewport.scale * WHEEL_SCALE_BY

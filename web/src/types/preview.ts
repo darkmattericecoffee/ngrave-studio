@@ -39,6 +39,7 @@ export interface PreviewState {
   showSvgOverlay: boolean
   showStock: boolean
   showRapidMoves: boolean
+  showCutOrder: boolean
 
   // Init progress (0–100, null when not initializing)
   initProgress: number | null
