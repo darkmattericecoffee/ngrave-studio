@@ -902,7 +902,6 @@ mod test {
             warnings,
             vec![
                 GenerationWarning::MaterialBoundsExceeded,
-                GenerationWarning::MachineBoundsExceeded,
                 GenerationWarning::DepthExceedsMaterialThickness,
             ]
         );

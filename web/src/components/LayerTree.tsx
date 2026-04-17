@@ -1,23 +1,53 @@
 import { useEffect, useMemo, useState } from 'react'
 import { SearchField } from '@heroui/react'
-import { ChevronDown, ChevronRight, LayoutCells, Sparkles } from '@gravity-ui/icons'
+import { ChevronDown, ChevronRight, Geo, GeoFill, LayoutCells, Sparkles } from '@gravity-ui/icons'
 
 import { resolveNodeCncMetadata } from '../lib/cncMetadata'
 import { AppIcon, Icons } from '../lib/icons'
-import { depthToColor } from '../lib/cncVisuals'
+import { depthToColor, isGeometricallyOpen, normalizeEngraveType } from '../lib/cncVisuals'
 import { useEditorStore } from '../store'
-import type { CanvasNode, GroupNode } from '../types/editor'
+import type { CanvasNode, GroupNode, LineNode } from '../types/editor'
+import type { NormalizedEngraveType } from '../lib/cncVisuals'
 
 function cn(...classes: (string | boolean | undefined | null)[]) {
   return classes.filter(Boolean).join(' ')
 }
 
-const NODE_TYPE_LABEL: Record<string, string> = {
-  group: 'group',
-  rect: 'rect',
-  circle: 'circle',
-  line: 'line',
-  path: 'path',
+const SVG_NS = 'http://www.w3.org/2000/svg'
+const LAYER_PREVIEW_SIZE = 24
+const DEPTH_EPSILON = 0.0001
+
+const ENGRAVE_LABEL: Record<NormalizedEngraveType, string> = {
+  contour: 'Contour',
+  pocket: 'Pocket',
+  plunge: 'Plunge',
+}
+
+interface Bounds {
+  minX: number
+  minY: number
+  maxX: number
+  maxY: number
+}
+
+interface Matrix {
+  a: number
+  b: number
+  c: number
+  d: number
+  e: number
+  f: number
+}
+
+let measureSvg: SVGSVGElement | null = null
+let measurePath: SVGPathElement | null = null
+const pathBoundsCache = new Map<string, Bounds | null>()
+
+interface LayerCncSummary {
+  depth: number | null
+  depthLabel: string
+  mode: NormalizedEngraveType | 'mixed'
+  modeLabel: string
 }
 
 // Build a flat ordered list of all rendered node IDs (depth-first), respecting
@@ -41,6 +71,498 @@ function buildFlatList(
   return result
 }
 
+function collectLeafNodes(
+  node: CanvasNode,
+  nodesById: Record<string, CanvasNode>,
+): CanvasNode[] {
+  if (node.type !== 'group') return [node]
+
+  const childNodes = (node as GroupNode).childIds.flatMap((childId) => {
+    const child = nodesById[childId]
+    return child ? collectLeafNodes(child, nodesById) : []
+  })
+
+  return childNodes.length > 0 ? childNodes : [node]
+}
+
+function inferEngraveMode(node: CanvasNode, nodesById: Record<string, CanvasNode>): NormalizedEngraveType {
+  const metadataMode = normalizeEngraveType(resolveNodeCncMetadata(node, nodesById).engraveType)
+  if (metadataMode) return metadataMode
+  return isGeometricallyOpen(node) ? 'contour' : 'pocket'
+}
+
+function formatDepth(depth: number): string {
+  return `${Number(depth.toFixed(2))} mm`
+}
+
+function buildLayerCncSummary(
+  node: CanvasNode,
+  nodesById: Record<string, CanvasNode>,
+  defaultDepth: number,
+): LayerCncSummary {
+  const leafNodes = collectLeafNodes(node, nodesById)
+  const depths = new Set<string>()
+  const modes = new Set<NormalizedEngraveType>()
+  let firstDepth: number | null = null
+  let firstMode: NormalizedEngraveType | null = null
+
+  leafNodes.forEach((leaf) => {
+    const metadata = resolveNodeCncMetadata(leaf, nodesById)
+    const depth = metadata.cutDepth ?? defaultDepth
+    const mode = inferEngraveMode(leaf, nodesById)
+
+    if (firstDepth === null) firstDepth = depth
+    if (firstMode === null) firstMode = mode
+
+    depths.add((Math.round(depth / DEPTH_EPSILON) * DEPTH_EPSILON).toFixed(4))
+    modes.add(mode)
+  })
+
+  const mixedDepth = depths.size > 1
+  const mixedMode = modes.size > 1
+  const mode: NormalizedEngraveType | 'mixed' = mixedMode ? 'mixed' : (firstMode ?? 'pocket')
+
+  return {
+    depth: mixedDepth ? null : firstDepth ?? defaultDepth,
+    depthLabel: mixedDepth ? 'Mixed depth' : formatDepth(firstDepth ?? defaultDepth),
+    mode,
+    modeLabel: mode === 'mixed' ? 'Mixed' : ENGRAVE_LABEL[mode],
+  }
+}
+
+function FillModeIcon({
+  summary,
+}: {
+  summary: LayerCncSummary
+}) {
+  const Icon = summary.mode === 'contour' ? Geo : GeoFill
+  const color = summary.depth != null ? depthToColor(summary.depth) : undefined
+
+  return (
+    <Icon
+      className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+      aria-hidden="true"
+      style={color ? { color } : undefined}
+    />
+  )
+}
+
+function LayerCncSummaryTag({
+  summary,
+}: {
+  summary: LayerCncSummary
+}) {
+  return (
+    <span
+      className="flex min-w-[5.5rem] items-center justify-end gap-1.5 whitespace-nowrap text-right text-xs text-muted-foreground"
+      title={`${summary.modeLabel} · ${summary.depthLabel}`}
+    >
+      <FillModeIcon summary={summary} />
+      <span>{summary.depthLabel}</span>
+    </span>
+  )
+}
+
+function LayerName({
+  node,
+  isRenaming,
+  draft,
+  className,
+  onStartRename,
+  onDraftChange,
+  onCommit,
+  onCancel,
+}: {
+  node: CanvasNode
+  isRenaming: boolean
+  draft: string
+  className?: string
+  onStartRename: (node: CanvasNode) => void
+  onDraftChange: (value: string) => void
+  onCommit: (node: CanvasNode) => void
+  onCancel: () => void
+}) {
+  if (isRenaming) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        aria-label="Layer name"
+        className="min-w-0 flex-1 rounded border border-primary/40 bg-background px-1.5 py-0.5 text-sm text-foreground outline-none ring-1 ring-primary/20"
+        onChange={(event) => onDraftChange(event.target.value)}
+        onFocus={(event) => event.target.select()}
+        onBlur={() => onCommit(node)}
+        onMouseDown={(event) => event.stopPropagation()}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          event.stopPropagation()
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            onCommit(node)
+          } else if (event.key === 'Escape') {
+            event.preventDefault()
+            onCancel()
+          }
+        }}
+      />
+    )
+  }
+
+  return (
+    <span
+      className={className}
+      title="Double-click to rename"
+      onDoubleClick={(event) => {
+        event.preventDefault()
+        event.stopPropagation()
+        onStartRename(node)
+      }}
+    >
+      {node.name || node.id}
+    </span>
+  )
+}
+
+function ensureMeasureElements() {
+  if (measureSvg || typeof document === 'undefined') return
+
+  measureSvg = document.createElementNS(SVG_NS, 'svg')
+  measureSvg.setAttribute('width', '0')
+  measureSvg.setAttribute('height', '0')
+  measureSvg.setAttribute('aria-hidden', 'true')
+  Object.assign(measureSvg.style, {
+    position: 'absolute',
+    left: '-99999px',
+    top: '-99999px',
+    visibility: 'hidden',
+    pointerEvents: 'none',
+  })
+
+  measurePath = document.createElementNS(SVG_NS, 'path')
+  measureSvg.appendChild(measurePath)
+  document.body.appendChild(measureSvg)
+}
+
+function measurePathBounds(data: string): Bounds | null {
+  if (pathBoundsCache.has(data)) {
+    return pathBoundsCache.get(data) ?? null
+  }
+
+  ensureMeasureElements()
+  if (!measurePath) return null
+
+  try {
+    measurePath.setAttribute('d', data)
+    const box = measurePath.getBBox()
+    const bounds = {
+      minX: box.x,
+      minY: box.y,
+      maxX: box.x + box.width,
+      maxY: box.y + box.height,
+    }
+    pathBoundsCache.set(data, bounds)
+    return bounds
+  } catch {
+    pathBoundsCache.set(data, null)
+    return null
+  }
+}
+
+function identityMatrix(): Matrix {
+  return { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 }
+}
+
+function multiplyMatrices(left: Matrix, right: Matrix): Matrix {
+  return {
+    a: left.a * right.a + left.c * right.b,
+    b: left.b * right.a + left.d * right.b,
+    c: left.a * right.c + left.c * right.d,
+    d: left.b * right.c + left.d * right.d,
+    e: left.a * right.e + left.c * right.f + left.e,
+    f: left.b * right.e + left.d * right.f + left.f,
+  }
+}
+
+function nodeMatrix(node: CanvasNode): Matrix {
+  const radians = node.rotation * Math.PI / 180
+  const cos = Math.cos(radians)
+  const sin = Math.sin(radians)
+
+  return {
+    a: cos * node.scaleX,
+    b: sin * node.scaleX,
+    c: -sin * node.scaleY,
+    d: cos * node.scaleY,
+    e: node.x,
+    f: node.y,
+  }
+}
+
+function applyMatrix(matrix: Matrix, x: number, y: number): { x: number; y: number } {
+  return {
+    x: matrix.a * x + matrix.c * y + matrix.e,
+    y: matrix.b * x + matrix.d * y + matrix.f,
+  }
+}
+
+function addPoint(bounds: Bounds | null, x: number, y: number): Bounds {
+  if (!bounds) {
+    return { minX: x, minY: y, maxX: x, maxY: y }
+  }
+
+  return {
+    minX: Math.min(bounds.minX, x),
+    minY: Math.min(bounds.minY, y),
+    maxX: Math.max(bounds.maxX, x),
+    maxY: Math.max(bounds.maxY, y),
+  }
+}
+
+function addTransformedRect(
+  bounds: Bounds | null,
+  matrix: Matrix,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): Bounds {
+  return [
+    [minX, minY],
+    [maxX, minY],
+    [maxX, maxY],
+    [minX, maxY],
+  ].reduce<Bounds | null>((nextBounds, [x, y]) => {
+    const point = applyMatrix(matrix, x, y)
+    return addPoint(nextBounds, point.x, point.y)
+  }, bounds)!
+}
+
+function strokePadding(strokeWidth?: number): number {
+  return Math.max((strokeWidth ?? 0) / 2, 0.5)
+}
+
+function getNodePreviewBounds(
+  node: CanvasNode,
+  nodesById: Record<string, CanvasNode>,
+  parentMatrix = identityMatrix(),
+): Bounds | null {
+  const matrix = multiplyMatrices(parentMatrix, nodeMatrix(node))
+
+  if (node.type === 'group') {
+    return (node as GroupNode).childIds.reduce<Bounds | null>((bounds, childId) => {
+      const child = nodesById[childId]
+      if (!child) return bounds
+      const childBounds = getNodePreviewBounds(child, nodesById, matrix)
+      if (!childBounds) return bounds
+      return addTransformedRect(
+        bounds,
+        identityMatrix(),
+        childBounds.minX,
+        childBounds.minY,
+        childBounds.maxX,
+        childBounds.maxY,
+      )
+    }, null)
+  }
+
+  if (node.type === 'rect') {
+    const pad = strokePadding(node.strokeWidth)
+    return addTransformedRect(null, matrix, -pad, -pad, node.width + pad, node.height + pad)
+  }
+
+  if (node.type === 'circle') {
+    const pad = strokePadding(node.strokeWidth)
+    return addTransformedRect(null, matrix, -node.radius - pad, -node.radius - pad, node.radius + pad, node.radius + pad)
+  }
+
+  if (node.type === 'line') {
+    if (node.points.length < 2) return null
+    const xs = node.points.filter((_, index) => index % 2 === 0)
+    const ys = node.points.filter((_, index) => index % 2 === 1)
+    const pad = strokePadding(node.strokeWidth)
+    return addTransformedRect(
+      null,
+      matrix,
+      Math.min(...xs) - pad,
+      Math.min(...ys) - pad,
+      Math.max(...xs) + pad,
+      Math.max(...ys) + pad,
+    )
+  }
+
+  const pathBounds = measurePathBounds(node.data)
+  if (!pathBounds) return null
+  const pad = strokePadding(node.strokeWidth)
+  return addTransformedRect(
+    null,
+    matrix,
+    pathBounds.minX - pad,
+    pathBounds.minY - pad,
+    pathBounds.maxX + pad,
+    pathBounds.maxY + pad,
+  )
+}
+
+function boundsToViewBox(bounds: Bounds): string {
+  const width = Math.max(0.001, bounds.maxX - bounds.minX)
+  const height = Math.max(0.001, bounds.maxY - bounds.minY)
+  const span = Math.max(width, height, 1)
+  const padding = Math.max(span * 0.12, 1)
+  const extraX = Math.max(0, span - width) / 2
+  const extraY = Math.max(0, span - height) / 2
+
+  return [
+    bounds.minX - padding - extraX,
+    bounds.minY - padding - extraY,
+    width + padding * 2 + extraX * 2,
+    height + padding * 2 + extraY * 2,
+  ].join(' ')
+}
+
+function nodeTransform(node: CanvasNode): string | undefined {
+  const transforms: string[] = []
+
+  if (node.x !== 0 || node.y !== 0) {
+    transforms.push(`translate(${node.x} ${node.y})`)
+  }
+  if (node.rotation !== 0) {
+    transforms.push(`rotate(${node.rotation})`)
+  }
+  if (node.scaleX !== 1 || node.scaleY !== 1) {
+    transforms.push(`scale(${node.scaleX} ${node.scaleY})`)
+  }
+
+  return transforms.length > 0 ? transforms.join(' ') : undefined
+}
+
+function paintOrUndefined(value?: string): string | undefined {
+  const normalized = value?.trim()
+  if (!normalized || normalized === 'none') return undefined
+  return normalized
+}
+
+function shapePaint(node: Exclude<CanvasNode, GroupNode>): {
+  fill: string
+  stroke: string
+  strokeWidth: number
+} {
+  const fill = paintOrUndefined('fill' in node ? node.fill : undefined)
+  const stroke = paintOrUndefined('stroke' in node ? node.stroke : undefined)
+  const strokeWidth = 'strokeWidth' in node ? node.strokeWidth : 1
+  const fallbackStroke = fill ? 'none' : 'currentColor'
+
+  return {
+    fill: fill ?? 'none',
+    stroke: stroke ?? fallbackStroke,
+    strokeWidth: Boolean(stroke) || !fill ? Math.max(strokeWidth || 1, 1) : 0,
+  }
+}
+
+function linePoints(points: number[]): string {
+  const pairs: string[] = []
+  for (let index = 0; index + 1 < points.length; index += 2) {
+    pairs.push(`${points[index]},${points[index + 1]}`)
+  }
+  return pairs.join(' ')
+}
+
+function renderPreviewNode(node: CanvasNode, nodesById: Record<string, CanvasNode>) {
+  const transform = nodeTransform(node)
+  const opacity = node.opacity === 1 ? undefined : node.opacity
+
+  if (node.type === 'group') {
+    return (
+      <g key={node.id} transform={transform} opacity={opacity}>
+        {(node as GroupNode).childIds.map((childId) => {
+          const child = nodesById[childId]
+          return child ? renderPreviewNode(child, nodesById) : null
+        })}
+      </g>
+    )
+  }
+
+  const paint = shapePaint(node)
+  const sharedProps = {
+    key: node.id,
+    transform,
+    opacity,
+    fill: paint.fill,
+    stroke: paint.stroke,
+    strokeWidth: paint.strokeWidth,
+    vectorEffect: 'non-scaling-stroke',
+  } as const
+
+  if (node.type === 'rect') {
+    return (
+      <rect
+        {...sharedProps}
+        x={0}
+        y={0}
+        width={node.width}
+        height={node.height}
+        rx={node.cornerRadius}
+      />
+    )
+  }
+
+  if (node.type === 'circle') {
+    return <circle {...sharedProps} cx={0} cy={0} r={node.radius} />
+  }
+
+  if (node.type === 'line') {
+    const lineNode = node as LineNode
+    const Tag = lineNode.closed ? 'polygon' : 'polyline'
+    return (
+      <Tag
+        {...sharedProps}
+        points={linePoints(lineNode.points)}
+        fill={lineNode.closed ? paint.fill : 'none'}
+        strokeLinecap={lineNode.lineCap}
+        strokeLinejoin={lineNode.lineJoin}
+        fillRule={lineNode.fillRule}
+      />
+    )
+  }
+
+  return (
+    <path
+      {...sharedProps}
+      d={node.data}
+      fillRule={node.fillRule}
+    />
+  )
+}
+
+function LayerPreview({
+  node,
+  nodesById,
+}: {
+  node: CanvasNode
+  nodesById: Record<string, CanvasNode>
+}) {
+  const bounds = useMemo(() => getNodePreviewBounds(node, nodesById), [node, nodesById])
+
+  return (
+    <span
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-white text-muted-foreground"
+      aria-hidden="true"
+    >
+      {bounds ? (
+        <svg
+          width={LAYER_PREVIEW_SIZE}
+          height={LAYER_PREVIEW_SIZE}
+          viewBox={boundsToViewBox(bounds)}
+          className="h-full w-full"
+        >
+          {renderPreviewNode(node, nodesById)}
+        </svg>
+      ) : (
+        <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+      )}
+    </span>
+  )
+}
+
 export function LayerTree() {
   const nodesById = useEditorStore((s) => s.nodesById)
   const rootIds = useEditorStore((s) => s.rootIds)
@@ -50,11 +572,15 @@ export function LayerTree() {
   const toggleSelection = useEditorStore((s) => s.toggleSelection)
   const updateNodeTransform = useEditorStore((s) => s.updateNodeTransform)
   const setHoveredId = useEditorStore((s) => s.setHoveredId)
+  const defaultDepth = useEditorStore((s) => s.machiningSettings.defaultDepthMm)
+  const pushHistory = useEditorStore((s) => s.pushHistory)
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [lastClickedId, setLastClickedId] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [dragAnchorId, setDragAnchorId] = useState<string | null>(null)
+  const [renamingId, setRenamingId] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
 
   const filteredRootIds = rootIds.filter((id) => {
     const node = nodesById[id]
@@ -75,6 +601,7 @@ export function LayerTree() {
   }, [])
 
   function handleRowMouseDown(id: string, e: React.MouseEvent) {
+    if (renamingId) return
     if (e.button !== 0) return
     e.preventDefault() // prevent text selection during drag
 
@@ -124,6 +651,27 @@ export function LayerTree() {
     if (node) updateNodeTransform(id, { locked: !node.locked })
   }
 
+  function handleStartRename(node: CanvasNode) {
+    setRenamingId(node.id)
+    setRenameDraft(node.name || node.id)
+    setIsDragging(false)
+    setDragAnchorId(null)
+  }
+
+  function handleCancelRename() {
+    setRenamingId(null)
+    setRenameDraft('')
+  }
+
+  function handleCommitRename(node: CanvasNode) {
+    const nextName = renameDraft.trim()
+    handleCancelRename()
+
+    if (!nextName || nextName === node.name) return
+    pushHistory()
+    updateNodeTransform(node.id, { name: nextName } as Partial<CanvasNode>)
+  }
+
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       <div className="border-b border-border px-4 py-3">
@@ -167,13 +715,9 @@ export function LayerTree() {
               const node = nodesById[id]
               if (!node) return null
               const isGroup = node.type === 'group'
-              const childCount = isGroup ? (node as GroupNode).childIds.length : 0
               const selected = selectedIds.includes(id)
               const isCollapsed = collapsed[id] ?? false
-              const effectiveCncMetadata = resolveNodeCncMetadata(node, nodesById)
-              const cncColor = effectiveCncMetadata.cutDepth != null
-                ? depthToColor(effectiveCncMetadata.cutDepth)
-                : null
+              const cncSummary = buildLayerCncSummary(node, nodesById, defaultDepth)
 
               return (
                 <div key={id} className="rounded-lg border border-border bg-[var(--surface)]">
@@ -213,10 +757,17 @@ export function LayerTree() {
                         <span className="inline-flex h-5 w-5 items-center justify-center" />
                       )}
                       <AppIcon icon={Icons.picture} className="h-4 w-4 text-muted-foreground" />
-                      {cncColor ? (
-                        <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cncColor }} />
-                      ) : null}
-                      <span className="truncate text-sm font-medium">{node.name || id}</span>
+                      <LayerPreview node={node} nodesById={nodesById} />
+                      <LayerName
+                        node={node}
+                        isRenaming={renamingId === id}
+                        draft={renameDraft}
+                        className="truncate text-sm font-medium"
+                        onStartRename={handleStartRename}
+                        onDraftChange={setRenameDraft}
+                        onCommit={handleCommitRename}
+                        onCancel={handleCancelRename}
+                      />
                     </span>
                     <span className="flex shrink-0 items-center gap-1">
                       <span
@@ -284,9 +835,7 @@ export function LayerTree() {
                           CL
                         </span>
                       ) : null}
-                      <span className="min-w-[3rem] text-right text-xs text-muted-foreground">
-                        {isGroup ? `${childCount} parts` : NODE_TYPE_LABEL[node.type]}
-                      </span>
+                      <LayerCncSummaryTag summary={cncSummary} />
                     </span>
                   </button>
 
@@ -308,6 +857,13 @@ export function LayerTree() {
                           onRowMouseLeave={handleRowMouseLeave}
                           onToggleVisible={handleToggleVisible}
                           onToggleLocked={handleToggleLocked}
+                          defaultDepth={defaultDepth}
+                          renamingId={renamingId}
+                          renameDraft={renameDraft}
+                          onStartRename={handleStartRename}
+                          onDraftChange={setRenameDraft}
+                          onCommitRename={handleCommitRename}
+                          onCancelRename={handleCancelRename}
                         />
                       ))}
                     </div>
@@ -336,6 +892,13 @@ function TreeNode({
   onRowMouseLeave,
   onToggleVisible,
   onToggleLocked,
+  defaultDepth,
+  renamingId,
+  renameDraft,
+  onStartRename,
+  onDraftChange,
+  onCommitRename,
+  onCancelRename,
 }: {
   nodeId: string
   nodesById: Record<string, CanvasNode>
@@ -350,6 +913,13 @@ function TreeNode({
   onRowMouseLeave: () => void
   onToggleVisible: (id: string) => void
   onToggleLocked: (id: string) => void
+  defaultDepth: number
+  renamingId: string | null
+  renameDraft: string
+  onStartRename: (node: CanvasNode) => void
+  onDraftChange: (value: string) => void
+  onCommitRename: (node: CanvasNode) => void
+  onCancelRename: () => void
 }) {
   const node = nodesById[nodeId]
   if (!node) return null
@@ -358,7 +928,6 @@ function TreeNode({
   const childIds = isGroup ? (node as GroupNode).childIds : []
   const isSelected = selectedIds.includes(nodeId)
   const label = node.name || nodeId
-  const typeTag = NODE_TYPE_LABEL[node.type]
 
   const normalizedQuery = query.trim().toLowerCase()
   const matchesSelf = !normalizedQuery || label.toLowerCase().includes(normalizedQuery) || node.type.includes(normalizedQuery)
@@ -369,10 +938,7 @@ function TreeNode({
 
   if (!matchesSelf && !hasMatchingChildren) return null
 
-  const effectiveCncMetadata = resolveNodeCncMetadata(node, nodesById)
-  const cncColor = effectiveCncMetadata.cutDepth != null
-    ? depthToColor(effectiveCncMetadata.cutDepth)
-    : null
+  const cncSummary = buildLayerCncSummary(node, nodesById, defaultDepth)
 
   return (
     <div className="space-y-0.5">
@@ -410,10 +976,17 @@ function TreeNode({
                 : <ChevronDown className="h-3.5 w-3.5" />}
             </span>
           ) : null}
-          {cncColor ? (
-            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: cncColor }} />
-          ) : null}
-          <span className="truncate text-sm">{label}</span>
+          <LayerPreview node={node} nodesById={nodesById} />
+          <LayerName
+            node={node}
+            isRenaming={renamingId === nodeId}
+            draft={renameDraft}
+            className="truncate text-sm"
+            onStartRename={onStartRename}
+            onDraftChange={onDraftChange}
+            onCommit={onCommitRename}
+            onCancel={onCancelRename}
+          />
         </span>
         <span className="flex shrink-0 items-center gap-1">
           <span
@@ -481,7 +1054,7 @@ function TreeNode({
               CL
             </span>
           ) : null}
-          <span className="min-w-[2.5rem] text-right text-xs text-muted-foreground">{typeTag}</span>
+          <LayerCncSummaryTag summary={cncSummary} />
         </span>
       </button>
 
@@ -502,6 +1075,13 @@ function TreeNode({
               onRowMouseLeave={onRowMouseLeave}
               onToggleVisible={onToggleVisible}
               onToggleLocked={onToggleLocked}
+              defaultDepth={defaultDepth}
+              renamingId={renamingId}
+              renameDraft={renameDraft}
+              onStartRename={onStartRename}
+              onDraftChange={onDraftChange}
+              onCommitRename={onCommitRename}
+              onCancelRename={onCancelRename}
             />
           ))
         : null}

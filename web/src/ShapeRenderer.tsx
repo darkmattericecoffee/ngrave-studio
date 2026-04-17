@@ -94,6 +94,61 @@ interface SharedShapeProps {
 
 const MIN_PLUNGE_HIT_DIAMETER_PX = 18
 
+type GroupHitCandidate = {
+  id: string
+  area: number
+  hitIndex: number
+}
+
+function getDirectGroupHitCandidates(
+  stage: Konva.Stage,
+  position: { x: number; y: number },
+  nodesById: Record<string, CanvasNode>,
+): GroupHitCandidate[] {
+  const candidatesById = new Map<string, GroupHitCandidate>()
+
+  stage.getAllIntersections(position).forEach((shape, hitIndex) => {
+    let current: Konva.Node | null = shape
+
+    while (current) {
+      const id = current.id()
+      const node = id ? nodesById[id] : undefined
+
+      if (node?.type === 'group') {
+        const rect = current.getClientRect()
+        const area = Math.max(0, rect.width) * Math.max(0, rect.height)
+        const existing = candidatesById.get(id)
+
+        if (!existing || area < existing.area || (area === existing.area && hitIndex < existing.hitIndex)) {
+          candidatesById.set(id, { id, area, hitIndex })
+        }
+      }
+
+      current = current.parent
+    }
+  })
+
+  return Array.from(candidatesById.values()).sort(
+    (a, b) => a.area - b.area || a.hitIndex - b.hitIndex,
+  )
+}
+
+function pickDirectGroupCandidate(
+  candidates: GroupHitCandidate[],
+  selectedIds: string[],
+): string | null {
+  if (candidates.length === 0) {
+    return null
+  }
+
+  const selectedIndex = candidates.findIndex((candidate) => selectedIds.includes(candidate.id))
+  if (selectedIndex >= 0) {
+    return candidates[(selectedIndex + 1) % candidates.length].id
+  }
+
+  return candidates[0].id
+}
+
 function SvgPathNode({
   node,
   opacity,
@@ -291,7 +346,7 @@ export function ShapeRenderer({
   const toolDiameter = useEditorStore((state) => state.machiningSettings.toolDiameter)
   const viewportScale = useEditorStore((state) => state.viewport.scale)
   const updateNodeTransform = useEditorStore((state) => state.updateNodeTransform)
-  const { enterFocusMode, isSelected, selectNode } = useSelection()
+  const { enterFocusMode, isSelected, selectMany, selectedIds, selectNode } = useSelection()
 
   if (!node || !node.visible) {
     return null
@@ -336,6 +391,26 @@ export function ShapeRenderer({
     if (!listening || interactionBlocked) return
     if ('button' in event.evt && event.evt.button !== 0) return
     if (!isDirectlyInteractive) return
+
+    const directGroupPick =
+      'shiftKey' in event.evt &&
+      event.evt.shiftKey &&
+      (event.evt.metaKey || event.evt.ctrlKey)
+
+    if (directGroupPick) {
+      const stage = event.target.getStage()
+      const position = stage?.getPointerPosition()
+      if (stage && position) {
+        const candidates = getDirectGroupHitCandidates(stage, position, nodesById)
+        const nextGroupId = pickDirectGroupCandidate(candidates, selectedIds)
+
+        if (nextGroupId) {
+          selectMany([nextGroupId])
+          event.cancelBubble = true
+          return
+        }
+      }
+    }
 
     const additive = 'shiftKey' in event.evt ? event.evt.shiftKey || event.evt.ctrlKey : false
     if (!additive && isSelected(resolvedSelectionTarget)) {

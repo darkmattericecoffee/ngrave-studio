@@ -856,13 +856,6 @@ fn collect_engraving_groups<'a>(
         {
             warnings.push(GenerationWarning::MaterialBoundsExceeded);
         }
-        if min_x < tool_radius
-            || min_y < tool_radius
-            || max_x > engraving.machine_width - tool_radius
-            || max_y > engraving.machine_height - tool_radius
-        {
-            warnings.push(GenerationWarning::MachineBoundsExceeded);
-        }
     }
 
     Ok((

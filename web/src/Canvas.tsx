@@ -1342,7 +1342,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
       <div className="pointer-events-none absolute inset-x-0 bottom-7 z-20 flex justify-center px-6">
         <div className="pointer-events-auto flex items-center gap-2 rounded-[1.75rem] border border-white/10 bg-[rgba(19,19,23,0.9)] px-4 py-3 text-white shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
           {/* Direct selection toggle */}
-          <ToolbarTooltip label="Direct selection" shortcuts={['D', '⌘ Click']} note="Shift+click to multi-select">
+          <ToolbarTooltip label="Direct selection" shortcuts={['D', '⌘ Click']} note="Shift+click multi-selects. Shift+⌘ click picks groups.">
             <button
               type="button"
               className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${effectiveInteractionMode === 'direct' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}

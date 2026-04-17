@@ -5,6 +5,11 @@
 
 import * as THREE from 'three'
 import type { ParsedSegment } from '@svg2gcode/bridge/viewer'
+import {
+  createRapidMoveColorScale,
+  rapidDistanceColor,
+  segmentXyDistance,
+} from './rapidMoveColors'
 
 const CUT_COLOR = new THREE.Color(0xff4d6d)
 const RAPID_COLOR = new THREE.Color(0x666666)
@@ -25,6 +30,7 @@ export function buildToolpathLines(
   const filteredSegments = showRapidMoves
     ? segments
     : segments.filter((s) => s.motionKind !== 'rapid')
+  const rapidColorScale = createRapidMoveColorScale(segments)
 
   const vertexCount = filteredSegments.length * 2
   const positions = new Float32Array(vertexCount * 3)
@@ -51,7 +57,12 @@ export function buildToolpathLines(
           color = CUT_COLOR
           break
         case 'rapid':
-          color = RAPID_COLOR
+          {
+            const xyDistance = segmentXyDistance(seg)
+            color = xyDistance > 1.0e-9
+              ? rapidDistanceColor(xyDistance, rapidColorScale)
+              : RAPID_COLOR
+          }
           break
         case 'plunge':
           color = PLUNGE_COLOR
@@ -95,12 +106,17 @@ export function buildToolpathLines(
  * Uses binary search on the pre-built distance table for O(log n) lookups.
  */
 export function updateDrawRange(data: ToolpathLineData, currentDistance: number): void {
+  const table = data.distanceTable
+  if (table.length === 0) {
+    data.mesh.geometry.setDrawRange(0, 0)
+    return
+  }
+
   if (currentDistance <= 0) {
     data.mesh.geometry.setDrawRange(0, 0)
     return
   }
 
-  const table = data.distanceTable
   if (currentDistance >= table[table.length - 1]) {
     data.mesh.geometry.setDrawRange(0, data.totalVertexCount)
     return

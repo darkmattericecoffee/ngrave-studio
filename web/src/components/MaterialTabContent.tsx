@@ -485,7 +485,7 @@ export function PreviewTabContent() {
               onChange={(e) => setShowCutOrder(e.target.checked)}
               className="rounded border-border"
             />
-            Show cut order badges
+            Show cut order badges + rapids
           </label>
         </div>
       </section>

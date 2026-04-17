@@ -68,7 +68,7 @@ export function PreviewCanvas() {
   // `.map` + `needsUpdate` after construction was unreliable and caused the
   // wood texture to not show. The previous handle is disposed on swap.
   const stockMaterialRef = useRef<StockMaterialHandle | null>(null)
-  if (!stockMaterialRef.current) {
+  if (stockMaterialRef.current == null) {
     stockMaterialRef.current = createStockMaterialHandle()
   }
   useEffect(() => {
@@ -208,12 +208,12 @@ export function PreviewCanvas() {
 
     clearGroup(state.toolpathGroup)
 
-    const lineData = buildToolpathLines(parsedProgram.segments, showRapidMoves)
+    const lineData = buildToolpathLines(parsedProgram.segments, showRapidMoves || showCutOrder)
     state.toolpathGroup.add(lineData.mesh)
     toolpathLineDataRef.current = lineData
 
     requestRender()
-  }, [sceneRef, parsedProgram, showRapidMoves, requestRender])
+  }, [sceneRef, parsedProgram, showRapidMoves, showCutOrder, requestRender])
 
   // SVG overlay visibility
   useEffect(() => {
@@ -232,7 +232,7 @@ export function PreviewCanvas() {
     disposeCutOrderLabels(state.cutOrderGroup)
 
     if (showCutOrder && toolpaths && toolpaths.length > 0) {
-      const { group } = buildCutOrderLabels(toolpaths)
+      const { group } = buildCutOrderLabels(toolpaths, parsedProgram?.segments)
       for (const child of [...group.children]) {
         state.cutOrderGroup.add(child)
       }
@@ -242,7 +242,7 @@ export function PreviewCanvas() {
     return () => {
       disposeCutOrderLabels(state.cutOrderGroup)
     }
-  }, [sceneRef, toolpaths, showCutOrder, requestRender])
+  }, [sceneRef, toolpaths, parsedProgram, showCutOrder, requestRender])
 
   // Click-to-seek on cut-order badges. Raycast from the pointer into the
   // cutOrderGroup; on a hit, jump playback to that cut's start distance.

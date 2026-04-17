@@ -2,13 +2,20 @@
  * Numbered cut-order badges.
  *
  * One THREE.Sprite per toolpath group, positioned at the start of the first
- * cut segment. Each badge is a canvas-painted circle tinted with the toolpath's
- * operation color. Sprites face the camera and expose the seek distance via
- * `userData.seekDistance` so click handlers can jump playback there.
+ * cut segment. Each badge is a canvas-painted circle tinted by the incoming
+ * rapid distance when the full parsed segment list is available. Sprites face
+ * the camera and expose the seek distance via `userData.seekDistance` so click
+ * handlers can jump playback there.
  */
 
 import * as THREE from 'three'
+import type { ParsedSegment } from '@svg2gcode/bridge/viewer'
 import type { ToolpathGroup } from '../../types/preview'
+import {
+  createRapidMoveColorScale,
+  incomingRapidDistanceForCut,
+  rapidDistanceCssColor,
+} from './rapidMoveColors'
 
 const BADGE_SIZE_PX = 128
 const WORLD_SIZE = 8
@@ -60,12 +67,18 @@ export interface CutOrderLabel {
   seekDistance: number
 }
 
-export function buildCutOrderLabels(toolpaths: ToolpathGroup[]): {
+export function buildCutOrderLabels(
+  toolpaths: ToolpathGroup[],
+  allSegments: ParsedSegment[] = [],
+): {
   group: THREE.Group
   sprites: THREE.Sprite[]
 } {
   const group = new THREE.Group()
   const sprites: THREE.Sprite[] = []
+  const rapidColorScale = allSegments.length > 0
+    ? createRapidMoveColorScale(allSegments)
+    : null
 
   let visibleIndex = 0
   for (const tp of toolpaths) {
@@ -74,7 +87,12 @@ export function buildCutOrderLabels(toolpaths: ToolpathGroup[]): {
     if (!firstCut) continue
     visibleIndex += 1
 
-    const fill = hexFromNumberOrString(firstCut.operationColor)
+    const incomingRapidDistance = rapidColorScale
+      ? incomingRapidDistanceForCut(firstCut, allSegments)
+      : 0
+    const fill = rapidColorScale
+      ? rapidDistanceCssColor(incomingRapidDistance, rapidColorScale)
+      : hexFromNumberOrString(firstCut.operationColor)
     const canvas = drawBadge(visibleIndex, fill)
     const texture = new THREE.CanvasTexture(canvas)
     texture.anisotropy = 4
@@ -92,6 +110,7 @@ export function buildCutOrderLabels(toolpaths: ToolpathGroup[]): {
     sprite.renderOrder = 10
     sprite.userData.seekDistance = firstCut.cumulativeDistanceStart
     sprite.userData.cutOrderIndex = visibleIndex
+    sprite.userData.incomingRapidDistance = incomingRapidDistance
 
     group.add(sprite)
     sprites.push(sprite)
