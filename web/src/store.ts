@@ -375,6 +375,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     tabWidth: 4,
     tabHeight: 1.5,
     tabSpacing: 50,
+    optimizePathOrder: true,
+    clusterDetourRadius: 5,
+    circularInterpolation: true,
   },
   viewport: initialViewport,
   ui: {
@@ -1215,7 +1218,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     const setProgress = (initProgress: number) =>
       set((state) => ({ preview: { ...state.preview, initProgress } }))
 
-    setProgress(0)
+    // Yield to the event loop so React can paint the current progress value
+    // before we kick off the next synchronous block. Without these yields the
+    // bar stays pinned at its last rendered value (0%) while tabs/parse/group
+    // run synchronously, even though setProgress is called between them.
+    const yieldToPaint = () => new Promise((r) => setTimeout(r, 0))
+
+    setProgress(1)
+    await yieldToPaint()
 
     // Post-process GCode to insert tabs on through-cuts when enabled
     let gcode = result.gcode
@@ -1228,25 +1238,37 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       })
     }
 
-    setProgress(5)
+    setProgress(4)
+    await yieldToPaint()
     const program = parseGcodeProgram(gcode, result.operation_ranges)
 
-    setProgress(10)
+    setProgress(8)
+    await yieldToPaint()
     const toolRadius = result.preview_snapshot.tool_diameter / 2
     const toolShape = machiningSettings.toolShape
     const rawGroups = groupSegments(program.segments, toolRadius, toolShape)
 
+    setProgress(12)
+    await yieldToPaint()
+
     // Compute sweep shapes incrementally, yielding to the event loop for UI updates
     const toolpaths: ToolpathGroup[] = []
+    const groupCount = Math.max(rawGroups.length, 1)
+    let lastReportedPct = 12
     for (let i = 0; i < rawGroups.length; i++) {
       toolpaths.push(computeGroupSweep(rawGroups[i]))
-      const pct = 10 + Math.round((i + 1) / rawGroups.length * 85)
-      setProgress(pct)
-      // Yield every few groups so the progress bar can repaint
-      if (i % 3 === 0) {
-        await new Promise((r) => setTimeout(r, 0))
+      const pct = 12 + Math.round(((i + 1) / groupCount) * 83)
+      // Only push an update (and yield) when the integer percent actually
+      // advances. With many small groups this keeps the progress bar smooth
+      // without thrashing zustand/React on every iteration.
+      if (pct !== lastReportedPct) {
+        setProgress(pct)
+        lastReportedPct = pct
+        await yieldToPaint()
       }
     }
+    setProgress(97)
+    await yieldToPaint()
 
     const stockBounds = {
       minX: 0,
@@ -1255,11 +1277,14 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       maxY: result.preview_snapshot.material_height,
     }
 
+    // Keep initProgress at 100 through the final state commit so the bar
+    // doesn't visually snap back to 0% while the modal is still on screen.
+    // App.tsx resets it to null when it tears the modal down.
     set((state) => ({
       preview: {
         ...state.preview,
         viewMode: 'preview3d',
-        initProgress: null,
+        initProgress: 100,
         parsedProgram: program,
         toolpaths,
         stockBounds,

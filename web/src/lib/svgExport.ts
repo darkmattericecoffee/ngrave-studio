@@ -1,4 +1,33 @@
 import type { ArtboardState, CanvasNode, CircleNode, GroupNode, LineNode, MachiningSettings, PathNode, RectNode } from '../types/editor'
+import { resolveNodeCncMetadata } from './cncMetadata'
+import { isGeometricallyOpen, normalizeEngraveType } from './cncVisuals'
+
+/**
+ * When a node is geometrically closed AND its effective engraveType resolves
+ * to "pocket", the SVG must go out with a solid fill. The Rust CAM turtle only
+ * registers a closed subpath as a pocket-able fill shape when `current_paint.fill`
+ * is truthy (see `lib/src/converter/cam.rs::CamTurtle::flush_subpath`). Emitting
+ * `fill="none"` would silently downgrade the operation to a contour, regardless
+ * of the data-engrave-type annotation.
+ *
+ * Honors an explicit `node.fill` when present, so user-set fills always win.
+ */
+const POCKET_EXPORT_FILL = '#000'
+
+interface SerializeContext {
+  nodesById: Record<string, CanvasNode>
+  /** When true, substitute a solid fill for closed nodes whose resolved engraveType is "pocket". */
+  forcePocketFill: boolean
+}
+
+function effectiveFill(node: CanvasNode, ctx: SerializeContext, fallback: string = 'none'): string {
+  if (node.fill) return node.fill
+  if (!ctx.forcePocketFill) return fallback
+  if (isGeometricallyOpen(node)) return fallback
+  const resolved = normalizeEngraveType(resolveNodeCncMetadata(node, ctx.nodesById).engraveType)
+  if (resolved === 'pocket') return POCKET_EXPORT_FILL
+  return fallback
+}
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -98,16 +127,16 @@ function renderHintAttrs(node: CanvasNode): string {
 
 function serializeGroup(
   node: GroupNode,
-  nodesById: Record<string, CanvasNode>,
+  ctx: SerializeContext,
   indent: string,
 ): string {
   const transform = serializeTransform(node.x, node.y, node.rotation, node.scaleX, node.scaleY)
   const opacityAttr = optionalAttr('opacity', node.opacity)
   const children = node.childIds
     .map((id) => {
-      const child = nodesById[id]
+      const child = ctx.nodesById[id]
       if (!child || !child.visible) return ''
-      return serializeNode(child, nodesById, indent + '  ')
+      return serializeNode(child, ctx, indent + '  ')
     })
     .filter(Boolean)
     .join('\n')
@@ -115,7 +144,7 @@ function serializeGroup(
   return `${indent}<g${transform}${opacityAttr}${centerlineDataAttrs(node)}>\n${children}\n${indent}</g>`
 }
 
-function serializeRect(node: RectNode, indent: string): string {
+function serializeRect(node: RectNode, ctx: SerializeContext, indent: string): string {
   const transform = serializeTransform(0, 0, node.rotation, node.scaleX, node.scaleY)
   return (
     `${indent}<rect` +
@@ -123,7 +152,7 @@ function serializeRect(node: RectNode, indent: string): string {
     attr('y', node.y) +
     attr('width', node.width) +
     attr('height', node.height) +
-    attr('fill', node.fill ?? 'none') +
+    attr('fill', effectiveFill(node, ctx)) +
     attr('stroke', node.stroke ?? 'none') +
     attr('stroke-width', node.strokeWidth) +
     (node.cornerRadius ? attr('rx', node.cornerRadius) : '') +
@@ -136,9 +165,10 @@ function serializeRect(node: RectNode, indent: string): string {
   )
 }
 
-function serializeCircle(node: CircleNode, indent: string): string {
+function serializeCircle(node: CircleNode, ctx: SerializeContext, indent: string): string {
   // Konva treats (x, y) as the center of the circle.
   // Represent this in SVG as cx/cy on the circle element, no separate translate needed.
+  const fill = effectiveFill(node, ctx)
   if (node.rotation !== 0 || node.scaleX !== 1 || node.scaleY !== 1) {
     // If there's non-trivial transform, wrap in a group for correctness.
     const transform = serializeTransform(node.x, node.y, node.rotation, node.scaleX, node.scaleY)
@@ -148,7 +178,7 @@ function serializeCircle(node: CircleNode, indent: string): string {
       attr('cx', 0) +
       attr('cy', 0) +
       attr('r', node.radius) +
-      attr('fill', node.fill ?? 'none') +
+      attr('fill', fill) +
       attr('stroke', node.stroke ?? 'none') +
       attr('stroke-width', node.strokeWidth) +
       optionalAttr('opacity', node.opacity) +
@@ -164,7 +194,7 @@ function serializeCircle(node: CircleNode, indent: string): string {
     attr('cx', node.x) +
     attr('cy', node.y) +
     attr('r', node.radius) +
-    attr('fill', node.fill ?? 'none') +
+    attr('fill', fill) +
     attr('stroke', node.stroke ?? 'none') +
     attr('stroke-width', node.strokeWidth) +
     optionalAttr('opacity', node.opacity) +
@@ -175,7 +205,7 @@ function serializeCircle(node: CircleNode, indent: string): string {
   )
 }
 
-function serializeLine(node: LineNode, indent: string): string {
+function serializeLine(node: LineNode, ctx: SerializeContext, indent: string): string {
   const transform = serializeTransform(node.x, node.y, node.rotation, node.scaleX, node.scaleY)
   // Build "x1,y1 x2,y2 ..." from flat [x1, y1, x2, y2, ...] points array.
   const pointPairs: string[] = []
@@ -190,7 +220,7 @@ function serializeLine(node: LineNode, indent: string): string {
     attr('points', pointsStr) +
     attr('stroke', node.stroke ?? 'none') +
     attr('stroke-width', node.strokeWidth) +
-    (node.fill ? attr('fill', node.fill) : ` fill="none"`) +
+    ` fill="${effectiveFill(node, ctx)}"` +
     (node.fillRule ? attr('fill-rule', node.fillRule) : '') +
     (node.lineCap ? attr('stroke-linecap', node.lineCap) : '') +
     (node.lineJoin ? attr('stroke-linejoin', node.lineJoin) : '') +
@@ -203,12 +233,12 @@ function serializeLine(node: LineNode, indent: string): string {
   )
 }
 
-function serializePath(node: PathNode, indent: string): string {
+function serializePath(node: PathNode, ctx: SerializeContext, indent: string): string {
   const transform = serializeTransform(node.x, node.y, node.rotation, node.scaleX, node.scaleY)
   return (
     `${indent}<path` +
     attr('d', node.data) +
-    attr('fill', node.fill ?? 'none') +
+    attr('fill', effectiveFill(node, ctx)) +
     attr('stroke', node.stroke ?? 'none') +
     attr('stroke-width', node.strokeWidth) +
     (node.fillRule ? attr('fill-rule', node.fillRule) : '') +
@@ -223,26 +253,41 @@ function serializePath(node: PathNode, indent: string): string {
 
 function serializeNode(
   node: CanvasNode,
-  nodesById: Record<string, CanvasNode>,
+  ctx: SerializeContext,
   indent: string,
 ): string {
   if (!node.visible) return ''
 
   switch (node.type) {
     case 'group':
-      return serializeGroup(node, nodesById, indent)
+      return serializeGroup(node, ctx, indent)
     case 'rect':
-      return serializeRect(node, indent)
+      return serializeRect(node, ctx, indent)
     case 'circle':
-      return serializeCircle(node, indent)
+      return serializeCircle(node, ctx, indent)
     case 'line':
-      return serializeLine(node, indent)
+      return serializeLine(node, ctx, indent)
     case 'path':
-      return serializePath(node, indent)
+      return serializePath(node, ctx, indent)
   }
 }
 
 // ─── public API ───────────────────────────────────────────────────────────────
+
+export interface ExportToSVGOptions {
+  /**
+   * When true, closed nodes whose resolved engraveType is "pocket" are
+   * serialized with a solid fill instead of `fill="none"`. The Rust CAM
+   * turtle only treats closed subpaths as pocketable fill shapes when the
+   * SVG paint includes a real fill, so this is required for the CAM
+   * pipeline to actually generate pocket toolpaths for generator output
+   * (e.g. tenons/dominos) and other stroke-only closed geometry.
+   *
+   * Leave false for project save / user-facing exports so the saved SVG
+   * round-trips without accidentally marking shapes as filled.
+   */
+  forcePocketFill?: boolean
+}
 
 /**
  * Converts the normalized canvas state into a clean SVG string.
@@ -255,15 +300,17 @@ export function exportToSVG(
   nodesById: Record<string, CanvasNode>,
   rootIds: string[],
   artboard: ArtboardState,
+  options: ExportToSVGOptions = {},
 ): string {
   const { width, height, x: artX, y: artY } = artboard
+  const ctx: SerializeContext = { nodesById, forcePocketFill: options.forcePocketFill ?? false }
 
   const innerIndent = '    '
   const rootContent = rootIds
     .map((id) => {
       const node = nodesById[id]
       if (!node || !node.visible) return ''
-      return serializeNode(node, nodesById, innerIndent)
+      return serializeNode(node, ctx, innerIndent)
     })
     .filter(Boolean)
     .join('\n')
@@ -298,13 +345,15 @@ export function exportProjectSVG(
   projectName: string,
 ): string {
   const { width, height, x: artX, y: artY } = artboard
+  // Project save never substitutes fills — we want lossless round-trip.
+  const ctx: SerializeContext = { nodesById, forcePocketFill: false }
 
   const innerIndent = '    '
   const rootContent = rootIds
     .map((id) => {
       const node = nodesById[id]
       if (!node || !node.visible) return ''
-      return serializeNode(node, nodesById, innerIndent)
+      return serializeNode(node, ctx, innerIndent)
     })
     .filter(Boolean)
     .join('\n')

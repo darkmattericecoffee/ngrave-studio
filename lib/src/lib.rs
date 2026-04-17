@@ -1,5 +1,7 @@
 /// Approximate [Bézier curves](https://en.wikipedia.org/wiki/B%C3%A9zier_curve) with [Circular arcs](https://en.wikipedia.org/wiki/Circular_arc)
 mod arc;
+/// Reinserts short strokes into nearby longer strokes so travel stays local
+mod cluster;
 /// Converts an SVG to an internal representation
 mod converter;
 /// CAM-specific engraving configuration and warnings
@@ -122,7 +124,10 @@ mod test {
         circular_interpolation: bool,
         dimensions: [Option<Length>; 2],
     ) -> Vec<Token<'_>> {
-        let config = ConversionConfig::default();
+        let config = ConversionConfig {
+            optimize_path_order: false,
+            ..ConversionConfig::default()
+        };
         let options = ConversionOptions { dimensions };
         let document = roxmltree::Document::parse_with_options(
             input,
@@ -508,7 +513,10 @@ mod test {
         );
         let actual = converter::svg2program(
             &document,
-            &ConversionConfig::default(),
+            &ConversionConfig {
+                optimize_path_order: false,
+                ..ConversionConfig::default()
+            },
             ConversionOptions::default(),
             machine,
         );
@@ -545,7 +553,10 @@ mod test {
         );
         let actual = converter::svg2program(
             &document,
-            &ConversionConfig::default(),
+            &ConversionConfig {
+                optimize_path_order: false,
+                ..ConversionConfig::default()
+            },
             ConversionOptions::default(),
             machine,
         );

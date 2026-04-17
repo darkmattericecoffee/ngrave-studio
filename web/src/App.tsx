@@ -313,7 +313,19 @@ function App() {
       // Defer so the loading UI can paint, then run async with progress
       setTimeout(async () => {
         await initPreview(gcode.result!)
+        // Wait two animation frames so PreviewCanvas has a chance to mount
+        // and render its first frame while the modal still shows 100%.
+        // Without this the bar visibly snaps back to 0% for ~1 frame before
+        // the scene is ready.
+        await new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        )
         setIsInitializingPreview(false)
+        // Clear the progress value now that the modal is gone so the next
+        // invocation starts fresh.
+        useEditorStore.setState((state) => ({
+          preview: { ...state.preview, initProgress: null },
+        }))
       }, 0)
     } else {
       setViewMode(mode)

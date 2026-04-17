@@ -55,7 +55,23 @@ export function createGrid(materialWidth: number, materialHeight: number): THREE
   const divisions = Math.round(gridSize / 10)
   const grid = new THREE.GridHelper(gridSize, divisions, 0x666666, 0x383838)
   grid.rotation.x = Math.PI / 2
-  grid.position.set(materialWidth / 2, materialHeight / 2, 0)
+  // Lift the grid slightly above the stock surface (Z=0) so it doesn't
+  // z-fight with the material top face from certain camera angles.
+  grid.position.set(materialWidth / 2, materialHeight / 2, 0.5)
+  // GridHelper ships with two LineBasicMaterials (center + grid). Make both
+  // transparent so the grid reads as a faint overlay, not a solid pattern.
+  // Keep depthWrite on so the grid occludes correctly against the stock —
+  // without it, transparent-sorted stock tiles in front of the grid will
+  // draw on top and hide half of it depending on camera angle.
+  const gridMaterials = Array.isArray(grid.material) ? grid.material : [grid.material]
+  for (const mat of gridMaterials) {
+    const lineMat = mat as THREE.LineBasicMaterial
+    lineMat.transparent = true
+    lineMat.opacity = 0.28
+  }
+  // Draw the grid after the transparent stock so it always sits on top of
+  // the material surface regardless of the transparent sort order.
+  grid.renderOrder = 2
   group.add(grid)
 
   const axes = new THREE.AxesHelper(Math.min(materialWidth, materialHeight) * 0.15)

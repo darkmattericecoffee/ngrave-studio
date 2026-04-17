@@ -33,6 +33,13 @@ export interface MachiningSettings {
   tabWidth: number
   tabHeight: number
   tabSpacing: number
+  /** Reorder strokes via TSP to minimize pen-up travel. */
+  optimizePathOrder: boolean
+  /** If set (mm), splices short strokes mid-way into nearby longer strokes
+   *  after TSP — minimizes drift on handheld / uncalibrated CNCs. */
+  clusterDetourRadius: number | null
+  /** Emit G2/G3 arcs instead of a polyline of G1s for curves — smaller gcode. */
+  circularInterpolation: boolean
 }
 
 export interface ViewportState {

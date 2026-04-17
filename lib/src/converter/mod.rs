@@ -14,6 +14,7 @@ use uom::si::{
 use self::units::CSS_DEFAULT_DPI;
 use crate::{
     Machine, Turtle,
+    cluster,
     converter::selector::SelectorList,
     tsp,
     turtle::{
@@ -52,6 +53,12 @@ pub struct ConversionConfig {
     /// Reorder paths to minimize travel time
     #[cfg_attr(feature = "serde", serde(default))]
     pub optimize_path_order: bool,
+    /// If set, after path-order optimization, short strokes whose endpoints fall
+    /// within this radius (mm) of a longer stroke get spliced into that longer
+    /// stroke at the nearest command boundary. Reduces positional drift on
+    /// handheld / uncalibrated CNCs by keeping consecutive cuts local.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub cluster_detour_radius: Option<f64>,
     /// CSS selector to filter which SVG elements are converted.
     ///
     /// Only the `:not`, `:is`, and `:has` pseudo classes are supported.
@@ -73,7 +80,8 @@ impl Default for ConversionConfig {
             dpi: 96.0,
             origin: zero_origin(),
             extra_attribute_name: None,
-            optimize_path_order: false,
+            optimize_path_order: true,
+            cluster_detour_radius: None,
             selector_filter: None,
         }
     }
@@ -317,7 +325,12 @@ fn svg2strokes_optimized(
     collect_visitor.end();
     collect_visitor.terrarium.pop_transform();
     let strokes = collect_visitor.terrarium.turtle.into_strokes();
-    tsp::minimize_travel_time(strokes)
+    let strokes = tsp::minimize_travel_time(strokes);
+    if let Some(r) = config.cluster_detour_radius {
+        cluster::cluster_detour(strokes, r)
+    } else {
+        strokes
+    }
 }
 
 fn node_name(node: &Node, attr_to_print: &Option<String>) -> String {

@@ -3,7 +3,7 @@ import { Geo, GeoFill } from '@gravity-ui/icons'
 import { Button, Slider, Tabs } from '@heroui/react'
 
 import { resolveNodeCncMetadata } from '../lib/cncMetadata'
-import { depthToColor, isOpenPathNode, normalizeEngraveType } from '../lib/cncVisuals'
+import { depthToColor, isGeometricallyOpen, normalizeEngraveType } from '../lib/cncVisuals'
 import { isGroupNode, getSubtreeIds } from '../lib/editorTree'
 import { useEditorStore } from '../store'
 import type { CanvasNode, CncMetadata, EngraveType } from '../types/editor'
@@ -77,7 +77,10 @@ function analyzeSelection(
       isMixedType = true
     }
 
-    if (!isOpenPathNode(node)) {
+    // Only geometrically-open paths are restricted to contour. Closed shapes
+    // without a fill (e.g. makerjs-generated tenon/domino output) can still
+    // be pocketed or plunged.
+    if (!isGeometricallyOpen(node)) {
       allOpenPaths = false
     }
   }

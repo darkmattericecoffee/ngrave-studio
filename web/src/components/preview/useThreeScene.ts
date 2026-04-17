@@ -7,6 +7,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
 import type { CameraType } from '../../types/preview'
+import { clearGroup } from './sceneHelpers'
 
 export interface SceneState {
   renderer: THREE.WebGLRenderer
@@ -146,8 +147,37 @@ export function useThreeScene(
       cancelAnimationFrame(animationIdRef.current)
       resizeObserver.disconnect()
       controls.dispose()
+
+      // Dispose every geometry, material, and texture held by the scene groups.
+      // Without this, all GPU buffers allocated for the stock/sweep/toolpath
+      // meshes leak until the WebGL context is destroyed.
+      clearGroup(lightGroup)
+      clearGroup(gridGroup)
+      clearGroup(stockGroup)
+      clearGroup(sweepGroup)
+      clearGroup(toolpathGroup)
+      clearGroup(overlayGroup)
+      clearGroup(toolMarkerGroup)
+
+      // Safety net: anything still parented directly to the scene.
+      scene.traverse((node) => {
+        const mesh = node as Partial<THREE.Mesh>
+        if (mesh.geometry && typeof mesh.geometry.dispose === 'function') {
+          mesh.geometry.dispose()
+        }
+        const mat = mesh.material as THREE.Material | THREE.Material[] | undefined
+        if (Array.isArray(mat)) {
+          for (const m of mat) m.dispose()
+        } else if (mat && typeof mat.dispose === 'function') {
+          mat.dispose()
+        }
+      })
+      scene.clear()
+
       renderer.dispose()
-      container.removeChild(renderer.domElement)
+      if (renderer.domElement.parentNode === container) {
+        container.removeChild(renderer.domElement)
+      }
       sceneRef.current = null
     }
   }, [containerRef])

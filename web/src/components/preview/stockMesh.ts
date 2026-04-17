@@ -138,39 +138,32 @@ function computeProfileSubLayers(
   return [{ shapes: clearedShapes, thickness: layerBottom - layerTop, zBottom: layerBottom }]
 }
 
-export function createStockMeshLayers(
-  bounds: StockBounds,
-  toolpaths: ToolpathGroup[],
-  materialThickness: number,
-  toolShape: RouterBitShape = 'Flat',
-  toolRadius = 1.5,
-  texture?: THREE.Texture,
-  fallbackDepth = 0.01,
-): THREE.Group {
-  const uniqueDepths =
-    toolpaths.length > 0
-      ? [...new Set(toolpaths.map((tp) => tp.depth))].sort((a, b) => a - b)
-      : [fallbackDepth]
+/**
+ * A reusable stock material. The underlying MeshPhongMaterial is created once
+ * per preview session so Three.js compiles its shader program exactly once.
+ * The depth-darkening uniform is held in a stable object so it can be updated
+ * between rebuilds without triggering a recompile.
+ */
+export interface StockMaterialHandle {
+  material: THREE.MeshPhongMaterial
+  uniforms: { uMaxDepth: { value: number } }
+  setTexture: (texture?: THREE.Texture) => void
+  dispose: () => void
+}
 
-  const group = new THREE.Group()
-  if (texture) {
-    texture.wrapS = THREE.RepeatWrapping
-    texture.wrapT = THREE.RepeatWrapping
-    texture.repeat.set(1 / 400, 1 / 400)
-  }
+export function createStockMaterialHandle(): StockMaterialHandle {
+  const uniforms = { uMaxDepth: { value: 0.01 } }
 
-  const stockMaterial = new THREE.MeshPhongMaterial({
-    color: texture ? 0xffffff : 0xcdbb8f,
-    map: texture ?? null,
+  const material = new THREE.MeshPhongMaterial({
+    color: 0xcdbb8f,
     transparent: true,
     opacity: 0.82,
     shininess: 28,
     side: THREE.DoubleSide,
   })
 
-  // Inject world-Z depth darkening: cut floors/walls darken proportionally to depth
-  stockMaterial.onBeforeCompile = (shader) => {
-    shader.uniforms.uMaxDepth = { value: totalDepth }
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.uMaxDepth = uniforms.uMaxDepth
 
     shader.vertexShader = shader.vertexShader.replace(
       '#include <common>',
@@ -199,7 +192,51 @@ if (vWorldZ < -0.05) {
     )
   }
 
+  return {
+    material,
+    uniforms,
+    setTexture: (texture?: THREE.Texture) => {
+      if (texture) {
+        texture.wrapS = THREE.RepeatWrapping
+        texture.wrapT = THREE.RepeatWrapping
+        texture.repeat.set(1 / 400, 1 / 400)
+      }
+      material.map = texture ?? null
+      material.color.setHex(texture ? 0xffffff : 0xcdbb8f)
+      material.needsUpdate = true
+    },
+    dispose: () => {
+      material.dispose()
+    },
+  }
+}
+
+export function createStockMeshLayers(
+  bounds: StockBounds,
+  toolpaths: ToolpathGroup[],
+  materialThickness: number,
+  toolShape: RouterBitShape = 'Flat',
+  toolRadius = 1.5,
+  stockHandle?: StockMaterialHandle,
+  fallbackDepth = 0.01,
+): THREE.Group {
+  const uniqueDepths =
+    toolpaths.length > 0
+      ? [...new Set(toolpaths.map((tp) => tp.depth))].sort((a, b) => a - b)
+      : [fallbackDepth]
+
+  const group = new THREE.Group()
+
+  // If no handle provided, create a one-shot material owned by the returned group.
+  // clearGroup() will dispose it along with the geometries.
+  const ownedHandle = stockHandle ?? createStockMaterialHandle()
+  const stockMaterial = ownedHandle.material
+  if (!stockHandle) {
+    group.userData.ownedStockMaterial = stockMaterial
+  }
+
   const totalDepth = Math.max(materialThickness, uniqueDepths[uniqueDepths.length - 1] || 0) || fallbackDepth
+  ownedHandle.uniforms.uMaxDepth.value = totalDepth
   const deepestCut = uniqueDepths[uniqueDepths.length - 1] || 0
 
   const tileW = (bounds.maxX - bounds.minX) / TILE_COUNT

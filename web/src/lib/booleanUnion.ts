@@ -1,6 +1,6 @@
 import paper from 'paper'
 
-import { isOpenPathNode, resolveEngraveType, type NormalizedEngraveType } from './cncVisuals'
+import { isGeometricallyOpen, isOpenPathNode, resolveEngraveType, type NormalizedEngraveType } from './cncVisuals'
 import type { CanvasNode } from '../types/editor'
 
 type AreaNode = Extract<CanvasNode, { type: 'rect' | 'circle' | 'path' | 'line' }>
@@ -749,8 +749,13 @@ export function buildDepthPreviewPlan(
     interactiveRootIds.add(rootId)
 
     // Stroke-only paths (open paths, or closed paths with no fill) and short lines
-    // should be treated as stroke shapes, not area fills.
-    if (node.type === 'path' && isOpenPathNode(node)) {
+    // should be treated as stroke shapes, not area fills — unless the user
+    // explicitly set a fillable engraveType on the node and the path is closed.
+    const explicitFillOnNode =
+      node.cncMetadata?.engraveType === 'pocket' || node.cncMetadata?.engraveType === 'raster'
+    const treatAsStroke =
+      isGeometricallyOpen(node) || (isOpenPathNode(node) && !explicitFillOnNode)
+    if (node.type === 'path' && treatAsStroke) {
       const s = getScope()
       s.activate()
       try {
@@ -783,7 +788,7 @@ export function buildDepthPreviewPlan(
       return true
     }
 
-    if (node.type === 'line' && (isOpenPathNode(node) || node.points.length < 6)) {
+    if (node.type === 'line' && (treatAsStroke || node.points.length < 6)) {
       const outlinedPoints = node.points.flatMap((value, index) => {
         if (index % 2 !== 0) {
           return []
@@ -846,8 +851,10 @@ export function buildDepthPreviewPlan(
     }
 
     // Closed paths with no fill (stroke-only) should be treated as outlines,
-    // not as fillable area shapes. Force contour mode for these.
-    const resolvedMode = isOpenPathNode(node) ? 'contour' as NormalizedEngraveType : effectiveMode
+    // not as fillable area shapes — unless the user explicitly chose a
+    // fillable mode on the node.
+    const resolvedMode =
+      isOpenPathNode(node) && !explicitFillOnNode ? 'contour' as NormalizedEngraveType : effectiveMode
     const key = `${effectiveDepth}:${resolvedMode}`
     const bucket = areaShapesByKey.get(key) ?? []
 

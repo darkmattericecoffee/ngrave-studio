@@ -148,7 +148,7 @@ export async function prepareGenerationInputs(
     throw new Error("No visible objects on the artboard to generate GCode from.")
   }
 
-  const composedSvg = composeArtObjectsSvg(artObjects, settings)
+  const composedSvg = ensurePocketFillsOnComposedSvg(composeArtObjectsSvg(artObjects, settings))
   const operations = getDerivedOperationsForArtObjects(artObjects)
   const deepestTargetDepth = operations.reduce(
     (max, operation) => Math.max(max, operation.target_depth_mm),
@@ -192,11 +192,12 @@ function getSvgTextForNode(
     }
 
     return {
-      svgText: exportToSVG(exportNodes.nodesById, [nodeId], {
-        ...artboard,
-        x: 0,
-        y: 0,
-      }),
+      svgText: exportToSVG(
+        exportNodes.nodesById,
+        [nodeId],
+        { ...artboard, x: 0, y: 0 },
+        { forcePocketFill: true },
+      ),
       metadataRootNode: exportNodes.nodesById[nodeId] ?? exportNodes.rootNode,
       metadataNodesById: exportNodes.nodesById,
       usesGeneratedCenterlineSvg: true,
@@ -231,11 +232,12 @@ function getSvgTextForNode(
   if (!metadataRootNode) return null
 
   return {
-    svgText: exportToSVG(subtreeNodes, [nodeId], {
-      ...artboard,
-      x: 0,
-      y: 0,
-    }),
+    svgText: exportToSVG(
+      subtreeNodes,
+      [nodeId],
+      { ...artboard, x: 0, y: 0 },
+      { forcePocketFill: true },
+    ),
     metadataRootNode,
     metadataNodesById: subtreeNodes,
     usesGeneratedCenterlineSvg: false,
@@ -337,4 +339,75 @@ function collectLeafCncMetadata(
     cutDepth: metadata.cutDepth,
     engraveType: bridgeType,
   }]
+}
+
+// ─── Composed-SVG pocket-fill safety net ──────────────────────────────────────
+
+/**
+ * The Rust CAM turtle (see `lib/src/converter/cam.rs::CamTurtle::flush_subpath`)
+ * only registers a closed subpath as a pocket-able fill shape when
+ * `current_paint.fill` is truthy. SVGs that reach this point with
+ * `fill="none"` on a Pocket-assigned element silently fall through to a
+ * contour trace — every stroke-only closed shape (generator output like
+ * tenons/dominos, Illustrator outline exports, etc.) hits this trap.
+ *
+ * Earlier pipeline stages try to emit fills correctly (see `svgExport.ts`
+ * with `forcePocketFill: true`), but the `originalSvg` fast path in
+ * `getSvgTextForNode` sends the raw import straight through and bypasses
+ * that. This runs as the last step before WASM, after
+ * `annotateAssignmentMetadata` has already stamped `data-engrave-type` on
+ * every leaf, so one DOM walk catches every code path.
+ *
+ * Rule: for every element marked `data-engrave-type="pocket"`, ensure it
+ * has a non-`none` `fill` attribute. We only overwrite when the element's
+ * direct fill is unset or `"none"` — explicit user fills (colors, gradient
+ * refs) are preserved because the Rust side only cares about fill presence,
+ * not fill value.
+ */
+function ensurePocketFillsOnComposedSvg(svgText: string): string {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(svgText, "image/svg+xml")
+
+  // Parser errors produce a <parsererror> root — bail out rather than risk
+  // corrupting the SVG string.
+  if (doc.getElementsByTagName("parsererror").length > 0) {
+    return svgText
+  }
+
+  let mutated = false
+  for (const element of Array.from(doc.querySelectorAll('[data-engrave-type="pocket"]'))) {
+    const attrFill = element.getAttribute("fill")
+    const styleFill = readStyleProperty(element.getAttribute("style"), "fill")
+
+    // Priority: inline style > attribute. Mirrors CSS specificity.
+    const effective = (styleFill ?? attrFill ?? "").trim().toLowerCase()
+
+    if (effective === "" || effective === "none") {
+      element.setAttribute("fill", "#000")
+      mutated = true
+    }
+  }
+
+  if (!mutated) return svgText
+  return new XMLSerializer().serializeToString(doc)
+}
+
+/**
+ * Reads a property from an inline CSS style attribute. Returns `null` when
+ * the style is missing or the property isn't set. Handles semicolons inside
+ * the value conservatively — this is not a full CSS parser, but it covers
+ * the shapes that come out of `prepareSvgDocument` (simple `prop: value`
+ * declarations separated by `;`).
+ */
+function readStyleProperty(style: string | null, property: string): string | null {
+  if (!style) return null
+  for (const declaration of style.split(";")) {
+    const colon = declaration.indexOf(":")
+    if (colon < 0) continue
+    const name = declaration.slice(0, colon).trim().toLowerCase()
+    if (name === property) {
+      return declaration.slice(colon + 1).trim()
+    }
+  }
+  return null
 }

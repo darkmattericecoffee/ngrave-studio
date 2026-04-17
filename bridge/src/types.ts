@@ -10,6 +10,8 @@ export interface Settings {
     origin: [number | null, number | null];
     extra_attribute_name: string | null;
     optimize_path_order: boolean;
+    /** Radius (mm) for the post-TSP cluster-detour pass; null disables. */
+    cluster_detour_radius: number | null;
     selector_filter: string | null;
   };
   engraving: {

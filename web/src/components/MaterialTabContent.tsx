@@ -336,6 +336,63 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
               onChange={(v) => setField({ machineWidth: v })} />
             <NumberField label="Machine H" unit="mm" value={machiningSettings.machineHeight}
               onChange={(v) => setField({ machineHeight: v })} />
+
+            {/* Path optimization */}
+            <div className="w-full space-y-2 border-t border-border pt-3">
+              <p className="text-sm font-medium text-foreground">Path optimization</p>
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={machiningSettings.optimizePathOrder}
+                  onChange={(e) => setField({ optimizePathOrder: e.target.checked })}
+                  className="rounded border-border"
+                />
+                Reorder paths to minimize travel (TSP)
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Solves a travel-minimizing order over strokes. Good default on; turn off to keep document order.
+              </p>
+
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={machiningSettings.clusterDetourRadius != null}
+                  onChange={(e) =>
+                    setField({ clusterDetourRadius: e.target.checked ? 5 : null })
+                  }
+                  className="rounded border-border"
+                />
+                Cluster nearby strokes as detours
+              </label>
+              {machiningSettings.clusterDetourRadius != null && (
+                <div className="pl-6">
+                  <NumberField
+                    label="Detour radius"
+                    unit="mm"
+                    value={machiningSettings.clusterDetourRadius}
+                    onChange={(v) =>
+                      setField({ clusterDetourRadius: v != null && v > 0 ? v : null })
+                    }
+                  />
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                After reordering, splices short strokes into nearby longer strokes at the closest command boundary within this radius. Helps handheld / drift-prone CNCs by keeping consecutive cuts local.
+              </p>
+
+              <label className="flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  checked={machiningSettings.circularInterpolation}
+                  onChange={(e) => setField({ circularInterpolation: e.target.checked })}
+                  className="rounded border-border"
+                />
+                Emit G2/G3 arcs (circular interpolation)
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Outputs curves as arcs instead of polylines. Much smaller gcode; requires firmware that supports G2/G3 (GRBL/fluidNC do).
+              </p>
+            </div>
           </div>
         )}
       </section>

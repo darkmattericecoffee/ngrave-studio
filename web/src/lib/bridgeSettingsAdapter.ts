@@ -34,6 +34,19 @@ export function buildBridgeSettings(
 ): Settings {
   return {
     ...base,
+    conversion: {
+      ...base.conversion,
+      // 0.05 mm curve tolerance — handheld CNC accuracy is nowhere near the
+      // 0.002 mm lib default. Looser tolerance lets arc-fitting collapse
+      // organic Beziers into a handful of G2/G3 segments instead of thousands
+      // of tiny G1s.
+      tolerance: 0.05,
+      optimize_path_order: machining.optimizePathOrder,
+      cluster_detour_radius:
+        machining.clusterDetourRadius != null && machining.clusterDetourRadius > 0
+          ? machining.clusterDetourRadius
+          : null,
+    },
     engraving: {
       ...base.engraving,
       material_width: artboard.width,
@@ -56,6 +69,10 @@ export function buildBridgeSettings(
     },
     machine: {
       ...base.machine,
+      supported_functionality: {
+        ...base.machine.supported_functionality,
+        circular_interpolation: machining.circularInterpolation,
+      },
       ...(machining.travelZ != null && { travel_z: machining.travelZ }),
       ...(machining.cutZ != null && { cut_z: machining.cutZ }),
     },

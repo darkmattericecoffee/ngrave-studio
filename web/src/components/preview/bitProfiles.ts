@@ -13,11 +13,10 @@ export type ExtrudeFn = (
   shape: THREE.Shape,
   depth: number,
   radius: number,
-  color: number,
-  depthWrite: boolean,
+  material: THREE.Material,
 ) => THREE.Object3D
 
-function makeMaterial(color: number, depthWrite: boolean): THREE.MeshPhongMaterial {
+export function createSweepMaterial(color: number, depthWrite: boolean): THREE.MeshPhongMaterial {
   return new THREE.MeshPhongMaterial({
     color,
     transparent: true,
@@ -35,8 +34,7 @@ function extrudeFlat(
   shape: THREE.Shape,
   depth: number,
   _radius: number,
-  color: number,
-  depthWrite: boolean,
+  material: THREE.Material,
 ): THREE.Mesh {
   const geometry = new THREE.ExtrudeGeometry(shape, {
     depth,
@@ -44,7 +42,7 @@ function extrudeFlat(
     curveSegments: 28,
   })
   geometry.translate(0, 0, -depth)
-  return new THREE.Mesh(geometry, makeMaterial(color, depthWrite))
+  return new THREE.Mesh(geometry, material)
 }
 
 /**
@@ -59,16 +57,13 @@ function extrudeBall(
   shape: THREE.Shape,
   depth: number,
   radius: number,
-  color: number,
-  depthWrite: boolean,
+  material: THREE.Material,
 ): THREE.Object3D {
   const effectiveRadius = Math.min(radius, depth)
   const wallHeight = depth - effectiveRadius
 
   const group = new THREE.Group()
-  const material = makeMaterial(color, depthWrite)
 
-  // Upper flat walls (only when cut is deeper than the hemisphere)
   if (wallHeight > 0.001) {
     const wallGeo = new THREE.ExtrudeGeometry(shape, {
       depth: wallHeight,
@@ -79,10 +74,6 @@ function extrudeBall(
     group.add(new THREE.Mesh(wallGeo, material))
   }
 
-  // Hemisphere bottom using bevel — smooth quarter-circle profile
-  // With depth=0, bevel creates symmetric geometry:
-  //   Front bevel: Z = -effectiveRadius to 0 (inset → full)  ← hemisphere
-  //   Back bevel:  Z = 0 to +effectiveRadius (full → inset)  ← hidden inside wall
   const hemiGeo = new THREE.ExtrudeGeometry(shape, {
     depth: 0,
     bevelEnabled: true,
@@ -91,12 +82,11 @@ function extrudeBall(
     bevelSegments: 8,
     curveSegments: 28,
   })
-  // Position so hemisphere spans from -depth to -wallHeight
   hemiGeo.translate(0, 0, -wallHeight)
   group.add(new THREE.Mesh(hemiGeo, material))
 
   if (group.children.length === 0) {
-    return extrudeFlat(shape, depth, radius, color, depthWrite)
+    return extrudeFlat(shape, depth, radius, material)
   }
 
   return group
@@ -115,20 +105,17 @@ function extrudeVGroove(
   shape: THREE.Shape,
   depth: number,
   _radius: number,
-  color: number,
-  depthWrite: boolean,
+  material: THREE.Material,
 ): THREE.Object3D {
   const tanHalf = Math.tan(V_HALF_ANGLE_RAD)
   const layerCount = 8
   const layerThickness = depth / layerCount
 
   const group = new THREE.Group()
-  const material = makeMaterial(color, depthWrite)
 
   for (let i = 0; i < layerCount; i++) {
     const layerTop = i * layerThickness
     const layerBottom = (i + 1) * layerThickness
-    // Inset based on top of layer so surface layer stays at full width
     const insetAmount = layerTop / tanHalf
 
     let layerShapes: THREE.Shape[]
@@ -138,7 +125,7 @@ function extrudeVGroove(
       layerShapes = insetShapes([shape], insetAmount)
     }
 
-    if (layerShapes.length === 0) break // fully collapsed
+    if (layerShapes.length === 0) break
 
     for (const s of layerShapes) {
       const geo = new THREE.ExtrudeGeometry(s, {
@@ -151,9 +138,8 @@ function extrudeVGroove(
     }
   }
 
-  // If all layers collapsed, fall back to a thin surface extrusion
   if (group.children.length === 0) {
-    return extrudeFlat(shape, Math.min(depth, 0.1), _radius, color, depthWrite)
+    return extrudeFlat(shape, Math.min(depth, 0.1), _radius, material)
   }
 
   return group

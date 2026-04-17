@@ -6,7 +6,7 @@ import { useEditorStore } from '../../store'
 import { MATERIAL_PRESETS } from '../../lib/materialPresets'
 import { useThreeScene } from './useThreeScene'
 import { clearGroup, createLighting, createGrid, createToolMarker, createActivePathLine } from './sceneHelpers'
-import { createStockMeshLayers } from './stockMesh'
+import { createStockMeshLayers, createStockMaterialHandle, type StockMaterialHandle } from './stockMesh'
 import { createMergedSweepMeshes } from './sweepMesh'
 import { buildToolpathLines, updateDrawRange, type ToolpathLineData } from './toolpathLines'
 import type { ToolMarker } from './sceneHelpers'
@@ -25,6 +25,9 @@ export function PreviewCanvas() {
   const materialPreset = useEditorStore((s) => s.preview.materialPreset)
   const previewToolShape = useEditorStore((s) => s.preview.toolShape)
 
+  const isPlaying = useEditorStore((s) => s.preview.isPlaying)
+  const playbackDistance = useEditorStore((s) => s.preview.playbackDistance)
+
   const [stockTexture, setStockTexture] = useState<THREE.Texture | null>(null)
 
   useEffect(() => {
@@ -39,12 +42,43 @@ export function PreviewCanvas() {
     })
   }, [materialPreset])
 
+  // Dispose the final texture when the component itself unmounts — otherwise
+  // the texture survives as long as the WebGL context does.
+  useEffect(() => {
+    return () => {
+      setStockTexture((prev) => {
+        prev?.dispose()
+        return null
+      })
+    }
+  }, [])
+
   const { sceneRef, requestRender } = useThreeScene(containerRef, cameraType)
 
   // Refs for mutable scene objects
   const toolMarkerRef = useRef<ToolMarker | null>(null)
   const activePathLineRef = useRef<THREE.Line | null>(null)
   const toolpathLineDataRef = useRef<ToolpathLineData | null>(null)
+
+  // One shared stock material for the entire preview session. Reusing it
+  // across rebuilds keeps the Three.js shader program cache bounded to a
+  // single compiled program regardless of how many times we rebuild.
+  const stockMaterialRef = useRef<StockMaterialHandle | null>(null)
+  if (!stockMaterialRef.current) {
+    stockMaterialRef.current = createStockMaterialHandle()
+  }
+  useEffect(() => {
+    return () => {
+      stockMaterialRef.current?.dispose()
+      stockMaterialRef.current = null
+    }
+  }, [])
+
+  // Push texture changes into the shared material.
+  useEffect(() => {
+    stockMaterialRef.current?.setTexture(stockTexture ?? undefined)
+    requestRender()
+  }, [stockTexture, requestRender])
 
   // Set up lighting and grid on first mount or when material size changes
   useEffect(() => {
@@ -106,7 +140,7 @@ export function PreviewCanvas() {
       previewSnapshot.material_thickness,
       previewToolShape ?? 'Flat',
       previewSnapshot.tool_diameter / 2,
-      stockTexture ?? undefined,
+      stockMaterialRef.current ?? undefined,
     )
     state.stockGroup.add(stockMesh)
 
@@ -114,7 +148,7 @@ export function PreviewCanvas() {
     state.sweepGroup.add(sweepMesh)
 
     requestRender()
-  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, stockTexture, previewToolShape, requestRender])
+  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, previewToolShape, requestRender])
 
   // Auto-fit camera to toolpath bounding box when GCode is generated
   useEffect(() => {
@@ -186,65 +220,78 @@ export function PreviewCanvas() {
     requestRender()
   }, [sceneRef, showSvgOverlay, requestRender])
 
-  // Playback animation loop
+  // Sync tool marker + draw range whenever playback distance changes.
+  // This covers scrubbing (user drags the slider) without needing a rAF loop.
   useEffect(() => {
     const state = sceneRef.current
     if (!state) return
 
+    if (parsedProgram && toolMarkerRef.current) {
+      const sample = sampleProgramAtDistance(parsedProgram, playbackDistance)
+      const marker = toolMarkerRef.current
+      if (sample.segment) {
+        marker.group.visible = true
+        marker.group.position.set(sample.position.x, sample.position.y, sample.position.z)
+      } else {
+        marker.group.visible = false
+      }
+    }
+
+    if (toolpathLineDataRef.current) {
+      updateDrawRange(toolpathLineDataRef.current, playbackDistance)
+    }
+
+    requestRender()
+  }, [sceneRef, parsedProgram, playbackDistance, requestRender])
+
+  // Playback advancement loop. Only runs while actually playing. On unmount
+  // or when playback stops, the cleanup cancels the latest frame id (tracked
+  // per-frame, unlike the previous version which only tracked the first id).
+  useEffect(() => {
+    if (!isPlaying) return
+
+    let rafId = 0
+    let cancelled = false
     let lastTime = 0
     let accumulator = 0
 
     const animate = (time: number) => {
+      if (cancelled) return
+
       const { preview } = useEditorStore.getState()
-
-      if (preview.isPlaying && preview.parsedProgram && preview.parsedProgram.totalDistance > 0) {
-        const delta = lastTime === 0 ? 0 : (time - lastTime) / 1000
-        accumulator += delta * preview.playbackRate
-
-        if (accumulator >= 0.1) {
-          let nextDistance = preview.playbackDistance + accumulator
-          accumulator = 0
-
-          if (nextDistance >= preview.parsedProgram.totalDistance) {
-            if (preview.loopPlayback) {
-              nextDistance = nextDistance % preview.parsedProgram.totalDistance
-            } else {
-              nextDistance = preview.parsedProgram.totalDistance
-              useEditorStore.getState().setIsPlaying(false)
-            }
-          }
-
-          useEditorStore.getState().setPlaybackDistance(nextDistance)
-        }
+      if (!preview.parsedProgram || preview.parsedProgram.totalDistance <= 0) {
+        return
       }
 
+      const delta = lastTime === 0 ? 0 : (time - lastTime) / 1000
+      accumulator += delta * preview.playbackRate
       lastTime = time
 
-      // Update tool marker position
-      if (preview.parsedProgram && toolMarkerRef.current) {
-        const sample = sampleProgramAtDistance(preview.parsedProgram, preview.playbackDistance)
-        const marker = toolMarkerRef.current
+      if (accumulator >= 0.1) {
+        let nextDistance = preview.playbackDistance + accumulator
+        accumulator = 0
 
-        if (sample.segment) {
-          marker.group.visible = true
-          marker.group.position.set(sample.position.x, sample.position.y, sample.position.z)
-        } else {
-          marker.group.visible = false
+        if (nextDistance >= preview.parsedProgram.totalDistance) {
+          if (preview.loopPlayback) {
+            nextDistance = nextDistance % preview.parsedProgram.totalDistance
+          } else {
+            nextDistance = preview.parsedProgram.totalDistance
+            useEditorStore.getState().setIsPlaying(false)
+          }
         }
+
+        useEditorStore.getState().setPlaybackDistance(nextDistance)
       }
 
-      // Update toolpath draw range
-      if (toolpathLineDataRef.current) {
-        updateDrawRange(toolpathLineDataRef.current, preview.playbackDistance)
-      }
-
-      requestRender()
-      requestAnimationFrame(animate)
+      rafId = requestAnimationFrame(animate)
     }
 
-    const id = requestAnimationFrame(animate)
-    return () => cancelAnimationFrame(id)
-  }, [sceneRef, requestRender])
+    rafId = requestAnimationFrame(animate)
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(rafId)
+    }
+  }, [isPlaying])
 
   return <div ref={containerRef} className="h-full w-full" />
 }

@@ -82,9 +82,15 @@ export function getCncVisualOverrides(
   if (cutDepth === undefined || cutDepth === null) return {}
 
   const ratio = Math.min(1, Math.max(0, cutDepth / MAX_CUT_DEPTH))
+  // Honor an explicit engraveType set on the node itself (user choice).
+  // Only fall back to the open-path heuristic when the type was inherited
+  // or unset — geometrically open paths still can't be filled, so they stay
+  // contour regardless.
+  const explicitOnNode = cncMetadata?.engraveType !== undefined
+  const forceContour = isGeometricallyOpen(node) || (!explicitOnNode && isOpenPathNode(node))
   const type = engraveType === 'plunge'
     ? 'plunge' as const
-    : isOpenPathNode(node)
+    : forceContour
       ? 'contour'
       : resolveEngraveType(engraveType, 'contour')
 

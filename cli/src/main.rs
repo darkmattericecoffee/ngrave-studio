@@ -153,6 +153,12 @@ struct Opt {
     #[arg(long)]
     /// Reorder paths to minimize travel time
     optimize_path_order: Option<bool>,
+    #[arg(long)]
+    /// Reinsert short strokes as detours mid-way through nearby longer strokes
+    /// whenever a boundary is within this radius (in mm). Helps handheld /
+    /// drift-prone CNCs by keeping consecutive cuts local. Omit or set <= 0 to
+    /// disable.
+    cluster_detour_radius: Option<f64>,
     /// CSS selector to filter which SVG elements are converted.
     ///
     /// Only the `:not`, `:is`, and `:has` pseudo classes are supported.
@@ -307,6 +313,13 @@ fn main() -> io::Result<()> {
         settings.conversion.extra_attribute_name = opt.extra_attribute_name;
         if let Some(optimize_path_order) = opt.optimize_path_order {
             settings.conversion.optimize_path_order = optimize_path_order;
+        }
+        if let Some(radius) = opt.cluster_detour_radius {
+            settings.conversion.cluster_detour_radius = if radius > 0.0 {
+                Some(radius)
+            } else {
+                None
+            };
         }
         if let Some(selector_filter) = opt.selector_filter {
             settings.conversion.selector_filter = Some(selector_filter);
