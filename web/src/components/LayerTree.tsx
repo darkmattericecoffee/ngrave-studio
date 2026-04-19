@@ -484,7 +484,6 @@ function renderPreviewNode(node: CanvasNode, nodesById: Record<string, CanvasNod
 
   const paint = shapePaint(node)
   const sharedProps = {
-    key: node.id,
     transform,
     opacity,
     fill: paint.fill,
@@ -496,6 +495,7 @@ function renderPreviewNode(node: CanvasNode, nodesById: Record<string, CanvasNod
   if (node.type === 'rect') {
     return (
       <rect
+        key={node.id}
         {...sharedProps}
         x={0}
         y={0}
@@ -507,7 +507,7 @@ function renderPreviewNode(node: CanvasNode, nodesById: Record<string, CanvasNod
   }
 
   if (node.type === 'circle') {
-    return <circle {...sharedProps} cx={0} cy={0} r={node.radius} />
+    return <circle key={node.id} {...sharedProps} cx={0} cy={0} r={node.radius} />
   }
 
   if (node.type === 'line') {
@@ -515,6 +515,7 @@ function renderPreviewNode(node: CanvasNode, nodesById: Record<string, CanvasNod
     const Tag = lineNode.closed ? 'polygon' : 'polyline'
     return (
       <Tag
+        key={node.id}
         {...sharedProps}
         points={linePoints(lineNode.points)}
         fill={lineNode.closed ? paint.fill : 'none'}
@@ -527,6 +528,7 @@ function renderPreviewNode(node: CanvasNode, nodesById: Record<string, CanvasNod
 
   return (
     <path
+      key={node.id}
       {...sharedProps}
       d={node.data}
       fillRule={node.fillRule}
@@ -709,8 +711,8 @@ export function LayerTree() {
         onOpenChange={(isOpen) => setContextMenu((current) => ({ ...current, isOpen }))}
       />
       <div className="border-b border-border px-4 py-3">
-        <SearchField value={query} onChange={setQuery} fullWidth>
-          <SearchField.Group>
+        <SearchField value={query} onChange={setQuery} fullWidth aria-label="Filter art objects">
+          <SearchField.Group aria-label="Filter art objects">
             <SearchField.SearchIcon>
               <svg height="16" viewBox="0 0 16 16" width="16" xmlns="http://www.w3.org/2000/svg">
                 <path

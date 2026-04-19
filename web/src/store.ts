@@ -165,6 +165,7 @@ export interface EditorStore {
   setShowRapidMoves: (show: boolean) => void
   setShowCutOrder: (show: boolean) => void
   setMaterialPreset: (preset: MaterialPreset) => void
+  setSceneReady: (ready: boolean) => void
   initPreview: (result: import('@svg2gcode/bridge').GenerateJobResponse) => Promise<void>
   clearPreview: () => void
 }
@@ -1707,6 +1708,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     showCutOrder: false,
     materialPreset: DEFAULT_MATERIAL,
     initProgress: null,
+    isSceneReady: true,
     parsedProgram: null,
     toolpaths: null,
     stockBounds: null,
@@ -1780,8 +1782,18 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
       preview: { ...state.preview, materialPreset: preset },
     }))
   },
+  setSceneReady: (ready) => {
+    set((state) => ({
+      preview: { ...state.preview, isSceneReady: ready },
+    }))
+  },
   initPreview: async (result) => {
     const { machiningSettings, artboard } = get()
+
+    // Mesh building happens after initPreview returns (inside PreviewCanvas).
+    // Flag the scene as not-ready here so the init overlay keeps covering the
+    // grey mount gap until PreviewCanvas signals the first frame has painted.
+    set((state) => ({ preview: { ...state.preview, isSceneReady: false } }))
 
     const setProgress = (initProgress: number) =>
       set((state) => ({ preview: { ...state.preview, initProgress } }))
@@ -1870,6 +1882,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         ...state.preview,
         viewMode: 'design',
         initProgress: null,
+        isSceneReady: true,
         parsedProgram: null,
         toolpaths: null,
         stockBounds: null,

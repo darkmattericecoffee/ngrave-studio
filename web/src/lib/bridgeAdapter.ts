@@ -4,6 +4,7 @@ import {
   composeArtObjectsSvg,
   getDerivedOperationsForArtObjects,
   engraveTypeToFillMode,
+  splitCompositeElementId,
   type ArtObject,
   type Settings,
   type EngraveType as BridgeEngraveType,
@@ -12,10 +13,11 @@ import {
 import type {
   ArtboardState,
   CanvasNode,
+  CncMetadata,
   GroupNode,
   MachiningSettings,
 } from "../types/editor"
-import { resolveNodeCncMetadata } from "./cncMetadata"
+import { mergeCncMetadata } from "./cncMetadata"
 import { buildCenterlineExportNodes, subtreeHasActiveCenterline } from "./centerline"
 import { getSubtreeIds, isGroupNode } from "./editorTree"
 import { getNodeSize } from "./nodeDimensions"
@@ -275,6 +277,7 @@ function applyEditorCncMetadata(
 ) {
   // Collect leaf nodes with CNC metadata in document order
   const leafMetadata = collectLeafCncMetadata(rootNode, nodesById)
+  const intrinsicEngraveTypes = getIntrinsicEngraveTypes(artObject)
 
   // The bridge's selectable element IDs are in document order too
   const compositeIds = Object.keys(artObject.elementAssignments)
@@ -294,13 +297,15 @@ function applyEditorCncMetadata(
     const leafMeta = leafMetadata[i]
     if (leafMeta) {
       assignment.targetDepthMm = leafMeta.cutDepth ?? rootDepth
-      assignment.engraveType = leafMeta.engraveType ?? rootEngraveType
+      assignment.engraveType = leafMeta.engraveType
+        ?? intrinsicEngraveTypes[compositeId]
+        ?? rootEngraveType
       assignment.fillMode = engraveTypeToFillMode(assignment.engraveType) ?? rootFillMode
     } else {
       // Fall back to root defaults
       assignment.targetDepthMm = rootDepth
-      assignment.engraveType = rootEngraveType
-      assignment.fillMode = rootFillMode
+      assignment.engraveType = intrinsicEngraveTypes[compositeId] ?? rootEngraveType
+      assignment.fillMode = engraveTypeToFillMode(assignment.engraveType) ?? rootFillMode
     }
   }
 }
@@ -313,20 +318,27 @@ interface LeafMeta {
 function collectLeafCncMetadata(
   node: CanvasNode,
   nodesById: Record<string, CanvasNode>,
+  inheritedMetadata?: CncMetadata,
+  isRoot = true,
 ): LeafMeta[] {
+  const effectiveInherited = isRoot
+    ? inheritedMetadata
+    : mergeCncMetadata(node.cncMetadata, inheritedMetadata)
+
   if (isGroupNode(node)) {
     const result: LeafMeta[] = []
     for (const childId of (node as GroupNode).childIds) {
       const child = nodesById[childId]
       if (child && child.visible) {
-        result.push(...collectLeafCncMetadata(child, nodesById))
+        result.push(...collectLeafCncMetadata(child, nodesById, effectiveInherited, false))
       }
     }
     return result
   }
 
-  // Leaf node — resolve engrave type to bridge format
-  const metadata = resolveNodeCncMetadata(node, nodesById)
+  // Leaf node — use leaf/intermediate metadata. Root metadata is applied by
+  // applyEditorCncMetadata as a fallback, after SVG paint-based defaults.
+  const metadata = mergeCncMetadata(node.cncMetadata, effectiveInherited) ?? {}
   const editorType = metadata.engraveType
   let bridgeType: BridgeEngraveType | null = null
   if (editorType === "contour" || editorType === "outline") {
@@ -339,6 +351,52 @@ function collectLeafCncMetadata(
     cutDepth: metadata.cutDepth,
     engraveType: bridgeType,
   }]
+}
+
+function getIntrinsicEngraveTypes(artObject: ArtObject): Record<string, BridgeEngraveType> {
+  const result: Record<string, BridgeEngraveType> = {}
+  const compositeByLocalId = new Map(
+    Object.keys(artObject.elementAssignments).map((compositeId) => [
+      splitCompositeElementId(compositeId).elementId,
+      compositeId,
+    ]),
+  )
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(artObject.preparedSvg.normalized_svg, "image/svg+xml")
+  if (doc.getElementsByTagName("parsererror").length > 0) {
+    return result
+  }
+
+  for (const element of Array.from(doc.querySelectorAll("[data-s2g-id]"))) {
+    const localId = element.getAttribute("data-s2g-id")
+    if (!localId) continue
+
+    const compositeId = compositeByLocalId.get(localId)
+    if (!compositeId) continue
+
+    const fill = readInheritedPaint(element, "fill", "black")
+    const stroke = readInheritedPaint(element, "stroke", "none")
+    result[compositeId] = isNonePaint(fill) && !isNonePaint(stroke) ? "outline" : "pocket"
+  }
+
+  return result
+}
+
+function readInheritedPaint(element: Element, property: "fill" | "stroke", fallback: string): string {
+  let current: Element | null = element
+  while (current) {
+    const styleValue = readStyleProperty(current.getAttribute("style"), property)
+    if (styleValue != null) return styleValue
+    const attrValue = current.getAttribute(property)
+    if (attrValue != null) return attrValue
+    current = current.parentElement
+  }
+  return fallback
+}
+
+function isNonePaint(value: string | null | undefined): boolean {
+  const normalized = (value ?? "").trim().toLowerCase()
+  return normalized === "" || normalized === "none" || normalized === "transparent"
 }
 
 // ─── Composed-SVG pocket-fill safety net ──────────────────────────────────────

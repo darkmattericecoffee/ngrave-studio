@@ -63,8 +63,8 @@ export function LibraryPanel() {
   return (
     <div className="flex h-full flex-col overflow-hidden">
       <div className="border-b border-border px-4 py-3">
-        <SearchField value={query} onChange={setQuery} fullWidth>
-          <SearchField.Group>
+        <SearchField value={query} onChange={setQuery} fullWidth aria-label="Search library">
+          <SearchField.Group aria-label="Search library">
             <SearchField.SearchIcon>
               <svg height="16" viewBox="0 0 16 16" width="16" xmlns="http://www.w3.org/2000/svg">
                 <path

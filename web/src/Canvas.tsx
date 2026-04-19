@@ -84,7 +84,6 @@ function renderOutlineNode(
     )
   }
   const base = {
-    key: nodeId,
     ...t,
     stroke: '#0d99ff',
     strokeWidth: 1,
@@ -92,15 +91,15 @@ function renderOutlineNode(
     fill: '',
     listening: false,
   }
-  if (node.type === 'path') return <Path {...base} data={(node as PathNode).data} />
+  if (node.type === 'path') return <Path key={nodeId} {...base} data={(node as PathNode).data} />
   if (node.type === 'rect') {
     const n = node as RectNode
-    return <Rect {...base} width={n.width} height={n.height} cornerRadius={n.cornerRadius} />
+    return <Rect key={nodeId} {...base} width={n.width} height={n.height} cornerRadius={n.cornerRadius} />
   }
-  if (node.type === 'circle') return <Circle {...base} radius={(node as CircleNode).radius} />
+  if (node.type === 'circle') return <Circle key={nodeId} {...base} radius={(node as CircleNode).radius} />
   if (node.type === 'line') {
     const n = node as LineNode
-    return <Line {...base} points={n.points} closed={n.closed} />
+    return <Line key={nodeId} {...base} points={n.points} closed={n.closed} />
   }
   return null
 }

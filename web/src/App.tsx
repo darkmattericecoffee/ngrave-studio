@@ -50,6 +50,7 @@ function App() {
   const setViewMode = useEditorStore((state) => state.setViewMode)
   const initPreview = useEditorStore((state) => state.initPreview)
   const initProgress = useEditorStore((state) => state.preview.initProgress)
+  const isSceneReady = useEditorStore((state) => state.preview.isSceneReady)
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('design')
@@ -309,19 +310,17 @@ function App() {
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     if (mode === 'preview3d' && gcode.result) {
       setIsInitializingPreview(true)
-      // Defer so the loading UI can paint, then run async with progress
+      setViewMode('preview3d')
+      // Defer so the loading UI can paint, then run async with progress.
+      // PreviewCanvas is mounted behind the overlay during this, so its
+      // mesh-build useEffects can run while isSceneReady still gates the
+      // overlay visible.
       setTimeout(async () => {
         await initPreview(gcode.result!)
-        // Wait two animation frames so PreviewCanvas has a chance to mount
-        // and render its first frame while the modal still shows 100%.
-        // Without this the bar visibly snaps back to 0% for ~1 frame before
-        // the scene is ready.
-        await new Promise<void>((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
-        )
         setIsInitializingPreview(false)
-        // Clear the progress value now that the modal is gone so the next
-        // invocation starts fresh.
+        // Clear initProgress immediately; overlay visibility now hinges on
+        // isSceneReady, which PreviewCanvas flips to true once meshes are
+        // built and the first frame has painted.
         useEditorStore.setState((state) => ({
           preview: { ...state.preview, initProgress: null },
         }))
@@ -391,7 +390,7 @@ function App() {
                   </div>
 
                   {leftPanelTab === 'layers' ? (
-                    <ButtonGroup className="mt-4 w-full" variant="secondary">
+                    <ButtonGroup className="mt-4 w-full" variant="secondary" aria-label="Import and export project">
                       <Button
                         className="flex-1 cursor-pointer justify-start text-xs font-normal text-foreground"
                         onPress={() => fileInputRef.current?.click()}
@@ -461,21 +460,7 @@ function App() {
               onDismissGcode={gcode.reset}
             />
             <div className="min-h-0 flex-1 relative">
-              {isInitializingPreview ? (
-                <div className="flex h-full items-center justify-center bg-[#232323]">
-                  <div className="flex w-72 flex-col gap-3">
-                    <ProgressBar value={initProgress ?? 0} maxValue={100} aria-label="Creating 3D CNC preview" className="w-full">
-                      <div className="mb-2 flex items-center justify-between">
-                        <Label className="text-sm font-medium text-white">Creating 3D CNC preview</Label>
-                        <span className="text-xs text-white/60">{initProgress ?? 0}%</span>
-                      </div>
-                      <ProgressBar.Track className="h-2 overflow-hidden rounded-full bg-white/10">
-                        <ProgressBar.Fill className="rounded-full bg-emerald-500" />
-                      </ProgressBar.Track>
-                    </ProgressBar>
-                  </div>
-                </div>
-              ) : isPreview3d ? (
+              {isPreview3d ? (
                 <PreviewCanvas />
               ) : (
                 <Canvas
@@ -483,6 +468,36 @@ function App() {
                   materialPreset={materialPreset}
                   forceEngravePreview={isPreview2d}
                 />
+              )}
+
+              {/* Init overlay: covers PreviewCanvas while GCode is parsing
+                  (initProgress phase) AND while Three.js mesh building runs
+                  (isSceneReady flips to true after the first painted frame).
+                  Keeping PreviewCanvas mounted underneath lets its useEffects
+                  do their work instead of showing an empty grey canvas. */}
+              {isPreview3d && (isInitializingPreview || !isSceneReady) && (
+                <div className="absolute inset-0 z-10 flex h-full items-center justify-center bg-[#232323]">
+                  <div className="flex w-72 flex-col gap-3">
+                    <ProgressBar
+                      value={initProgress ?? (isInitializingPreview ? 0 : 100)}
+                      maxValue={100}
+                      aria-label="Creating 3D CNC preview"
+                      className="w-full"
+                    >
+                      <div className="mb-2 flex items-center justify-between">
+                        <Label className="text-sm font-medium text-white">
+                          {isInitializingPreview ? 'Creating 3D CNC preview' : 'Building 3D scene'}
+                        </Label>
+                        <span className="text-xs text-white/60">
+                          {isInitializingPreview ? `${initProgress ?? 0}%` : '…'}
+                        </span>
+                      </div>
+                      <ProgressBar.Track className="h-2 overflow-hidden rounded-full bg-white/10">
+                        <ProgressBar.Fill className="rounded-full bg-emerald-500" />
+                      </ProgressBar.Track>
+                    </ProgressBar>
+                  </div>
+                </div>
               )}
 
               {/* Empty-state drop zone */}

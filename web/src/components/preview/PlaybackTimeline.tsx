@@ -1,6 +1,8 @@
 import { useEditorStore } from '../../store'
+import type { ParsedProgram } from '@svg2gcode/bridge/viewer'
 
 const SPEED_OPTIONS = [0.5, 1, 2, 5, 10] as const
+const EMPTY_OPERATION_SPANS: ParsedProgram['operationSpans'] = []
 
 export function PlaybackTimeline() {
   const playbackDistance = useEditorStore((s) => s.preview.playbackDistance)
@@ -8,7 +10,9 @@ export function PlaybackTimeline() {
   const loopPlayback = useEditorStore((s) => s.preview.loopPlayback)
   const playbackRate = useEditorStore((s) => s.preview.playbackRate)
   const totalDistance = useEditorStore((s) => s.preview.parsedProgram?.totalDistance ?? 0)
-  const operationSpans = useEditorStore((s) => s.preview.parsedProgram?.operationSpans ?? [])
+  const operationSpans = useEditorStore(
+    (s) => s.preview.parsedProgram?.operationSpans ?? EMPTY_OPERATION_SPANS,
+  )
   const togglePlayback = useEditorStore((s) => s.togglePlayback)
   const setPlaybackDistance = useEditorStore((s) => s.setPlaybackDistance)
   const setLoopPlayback = useEditorStore((s) => s.setLoopPlayback)

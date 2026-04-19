@@ -44,6 +44,12 @@ export interface PreviewState {
   // Init progress (0–100, null when not initializing)
   initProgress: number | null
 
+  // True once PreviewCanvas has built its meshes and painted at least
+  // one frame with the current toolpaths. The init overlay stays visible
+  // until this flips, covering the grey-screen gap between GCode parse
+  // finishing and Three.js rendering the first scene.
+  isSceneReady: boolean
+
   materialPreset: MaterialPreset
 
   // Computed data (set by initPreview)

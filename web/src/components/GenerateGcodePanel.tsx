@@ -102,7 +102,7 @@ export function GenerateGcodePanel({ state, onDownload, onDismiss }: GenerateGco
         )}
 
         <div className="flex gap-2">
-          <ButtonGroup className="rounded-full">
+          <ButtonGroup className="rounded-full" aria-label="Download G-code">
             <Button
               size="sm"
               className="rounded-l-full bg-emerald-600 text-[13px] font-medium text-white hover:bg-emerald-500"

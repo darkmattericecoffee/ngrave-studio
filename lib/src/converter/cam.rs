@@ -10,8 +10,8 @@ use i_overlay::{
     },
 };
 use lyon_geom::{
-    CubicBezierSegment, LineSegment, Point, QuadraticBezierSegment, SvgArc, Vector,
-    euclid::default::Transform2D,
+    euclid::default::Transform2D, CubicBezierSegment, LineSegment, Point, QuadraticBezierSegment,
+    SvgArc, Vector,
 };
 use roxmltree::Document;
 use svgtypes::{Length, LengthUnit};
@@ -20,12 +20,12 @@ use uom::si::{
     length::{inch, millimeter},
 };
 
-use super::{ConversionConfig, ConversionOptions, ConversionVisitor, visit};
+use super::{visit, ConversionConfig, ConversionOptions, ConversionVisitor};
 use crate::{
-    EngravingConfig, EngravingOperation, FillMode, GenerationWarning, Machine, Turtle,
     arc::{ArcOrLineSegment, FlattenWithArcs},
     converter::{selector::SelectorList, units::CSS_DEFAULT_DPI},
     turtle::{PaintStyle, SvgFillRule},
+    EngravingConfig, EngravingOperation, FillMode, GenerationWarning, Machine, Turtle,
 };
 
 type Contour = Vec<[f64; 2]>;
@@ -90,11 +90,19 @@ fn reverse_segment(seg: &mut ArcOrLineSegment<f64>) {
 
 impl Toolpath {
     fn start(&self) -> Point<f64> {
-        segment_from(self.segments.first().expect("Toolpath must have at least one segment"))
+        segment_from(
+            self.segments
+                .first()
+                .expect("Toolpath must have at least one segment"),
+        )
     }
 
     fn end(&self) -> Point<f64> {
-        segment_to(self.segments.last().expect("Toolpath must have at least one segment"))
+        segment_to(
+            self.segments
+                .last()
+                .expect("Toolpath must have at least one segment"),
+        )
     }
 
     fn translate(&mut self, offset: Vector<f64>) {
@@ -194,13 +202,39 @@ impl CamTurtle {
     }
 
     /// Append a segment list from an arc or Bezier that has been
-    /// arc-fitted by [`FlattenWithArcs`]. Also appends the resulting
-    /// endpoints to `current_points` for fill contour collection.
+    /// arc-fitted by [`FlattenWithArcs`]. The arc representation is kept in
+    /// `current_segments` for stroke output so G2/G3 survives end-to-end,
+    /// but `current_points` (the polygon fed to i_overlay for pocket fills)
+    /// must be densely sampled — a single arc spanning a quarter circle only
+    /// contributes two endpoints otherwise, turning curved glyphs into
+    /// coarse octagons before any offset runs.
+    ///
+    /// The flattening tolerance here is looser than `self.tolerance` because
+    /// it only affects the polygon fed to i_overlay and the downstream 3D
+    /// preview; gcode emission uses `current_segments` (true arcs) directly.
+    /// A 3–5× loose factor keeps pocket curves visually smooth while
+    /// avoiding a quadratic slowdown in i_overlay as vertex count explodes.
     fn push_fitted_segments(&mut self, fitted: Vec<ArcOrLineSegment<f64>>) {
+        let polygon_tolerance = self.tolerance * 4.0;
         for seg in fitted {
-            let to = segment_to(&seg);
-            if self.current_points.last().copied() != Some(to) {
-                self.current_points.push(to);
+            match &seg {
+                ArcOrLineSegment::Arc(svg_arc) => {
+                    let arc = svg_arc.to_arc();
+                    arc.flattened(polygon_tolerance).for_each(|p| {
+                        if self.current_points.last().copied() != Some(p) {
+                            self.current_points.push(p);
+                        }
+                    });
+                    let endpoint = svg_arc.to;
+                    if self.current_points.last().copied() != Some(endpoint) {
+                        self.current_points.push(endpoint);
+                    }
+                }
+                ArcOrLineSegment::Line(line) => {
+                    if self.current_points.last().copied() != Some(line.to) {
+                        self.current_points.push(line.to);
+                    }
+                }
             }
             self.current_segments.push(seg);
         }
@@ -350,7 +384,12 @@ fn polyline_to_line_segments(points: &[Point<f64>]) -> Vec<ArcOrLineSegment<f64>
     points
         .windows(2)
         .filter(|w| w[0] != w[1])
-        .map(|w| ArcOrLineSegment::Line(LineSegment { from: w[0], to: w[1] }))
+        .map(|w| {
+            ArcOrLineSegment::Line(LineSegment {
+                from: w[0],
+                to: w[1],
+            })
+        })
         .collect()
 }
 
@@ -475,6 +514,382 @@ fn signed_sweep_from(v_start: Vector<f64>, v_point: Vector<f64>, ccw: bool) -> f
     delta
 }
 
+fn angle_between_unit(a: Vector<f64>, b: Vector<f64>) -> f64 {
+    a.dot(b).clamp(-1.0, 1.0).acos()
+}
+
+fn arc_tangent_at(center: Point<f64>, point: Point<f64>, ccw: bool) -> Option<Vector<f64>> {
+    let radial = point - center;
+    let tangent = if ccw {
+        Vector::new(-radial.y, radial.x)
+    } else {
+        Vector::new(radial.y, -radial.x)
+    };
+    normalize_or_none(tangent)
+}
+
+fn local_polyline_tangent(points: &[Point<f64>], idx: usize, closed: bool) -> Option<Vector<f64>> {
+    if points.len() < 2 || idx >= points.len() {
+        return None;
+    }
+
+    if closed && points.len() > 3 && (idx == 0 || idx == points.len() - 1) {
+        return normalize_or_none(points[1] - points[points.len() - 2]);
+    }
+
+    if idx == 0 {
+        normalize_or_none(points[1] - points[0])
+    } else if idx + 1 >= points.len() {
+        normalize_or_none(points[idx] - points[idx - 1])
+    } else {
+        normalize_or_none(points[idx + 1] - points[idx - 1])
+    }
+}
+
+fn outgoing_polyline_tangent(
+    points: &[Point<f64>],
+    idx: usize,
+    closed: bool,
+) -> Option<Vector<f64>> {
+    if idx + 1 < points.len() {
+        normalize_or_none(points[idx + 1] - points[idx])
+    } else if closed && points.len() > 3 {
+        normalize_or_none(points[1] - points[idx])
+    } else {
+        None
+    }
+}
+
+fn signed_vertex_turn(points: &[Point<f64>], idx: usize) -> Option<f64> {
+    if idx == 0 || idx + 1 >= points.len() {
+        return None;
+    }
+    let e_prev = normalize_or_none(points[idx] - points[idx - 1])?;
+    let e_next = normalize_or_none(points[idx + 1] - points[idx])?;
+    let cross = e_prev.x * e_next.y - e_prev.y * e_next.x;
+    let dot = e_prev.dot(e_next).clamp(-1.0, 1.0);
+    Some(cross.atan2(dot))
+}
+
+fn has_short_bevel_cluster(
+    points: &[Point<f64>],
+    start: usize,
+    end: usize,
+    max_total_turn: f64,
+) -> bool {
+    if end < start + 3 {
+        return false;
+    }
+
+    // A miter-limit bevel is often two moderate same-sign turns separated by
+    // one short edge.  Each turn can be smooth-looking on its own; together
+    // they are still a real corner that an arc must not span.
+    for j in (start + 1)..(end - 1) {
+        let Some(turn_a) = signed_vertex_turn(points, j) else {
+            continue;
+        };
+        let Some(turn_b) = signed_vertex_turn(points, j + 1) else {
+            continue;
+        };
+        if turn_a.abs() < 1.0e-9
+            || turn_b.abs() < 1.0e-9
+            || turn_a.signum() != turn_b.signum()
+            || turn_a.abs() + turn_b.abs() <= max_total_turn
+        {
+            continue;
+        }
+
+        let prev_len = (points[j] - points[j - 1]).length();
+        let bevel_len = (points[j + 1] - points[j]).length();
+        let next_len = (points[j + 2] - points[j + 1]).length();
+        if prev_len < 1.0e-9 || bevel_len < 1.0e-9 || next_len < 1.0e-9 {
+            continue;
+        }
+
+        if bevel_len <= prev_len.min(next_len) * 0.5 {
+            return true;
+        }
+    }
+
+    false
+}
+
+// Arc-refit validation limits. Keep them together so the start-tangent and
+// endpoint-preserving fallback fits are judged identically.
+const MAX_ARC_SWEEP: f64 = std::f64::consts::PI;
+const RADIAL_TOLERANCE_FACTOR: f64 = 3.0;
+const MAX_START_TANGENT_ERROR: f64 = 15.0f64 * std::f64::consts::PI / 180.0;
+const MAX_EXIT_TANGENT_ERROR: f64 = 15.0f64 * std::f64::consts::PI / 180.0;
+const MAX_INTERIOR_TANGENT_ERROR: f64 = 20.0f64 * std::f64::consts::PI / 180.0;
+const MAX_CHORD_TANGENT_ERROR: f64 = 25.0f64 * std::f64::consts::PI / 180.0;
+const MAX_VERTEX_TURN: f64 = 25.0f64 * std::f64::consts::PI / 180.0;
+
+fn fit_arc_through_three_points(
+    p0: Point<f64>,
+    p_mid: Point<f64>,
+    p_end: Point<f64>,
+) -> Option<(Point<f64>, f64, bool)> {
+    let (center, radius) = fit_circle_through_three(p0, p_mid, p_end)?;
+    let v_start = p0 - center;
+    let v_mid = p_mid - center;
+    let cross = v_start.x * v_mid.y - v_start.y * v_mid.x;
+    if cross.abs() < 1.0e-12 {
+        return None;
+    }
+    Some((center, radius, cross > 0.0))
+}
+
+fn solve_3x3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
+    for col in 0..3 {
+        let mut pivot = col;
+        let mut pivot_abs = a[col][col].abs();
+        for row in (col + 1)..3 {
+            let value_abs = a[row][col].abs();
+            if value_abs > pivot_abs {
+                pivot = row;
+                pivot_abs = value_abs;
+            }
+        }
+        if pivot_abs < 1.0e-12 || !pivot_abs.is_finite() {
+            return None;
+        }
+        if pivot != col {
+            a.swap(col, pivot);
+            b.swap(col, pivot);
+        }
+
+        let pivot_value = a[col][col];
+        for entry in &mut a[col][col..] {
+            *entry /= pivot_value;
+        }
+        b[col] /= pivot_value;
+
+        for row in 0..3 {
+            if row == col {
+                continue;
+            }
+            let factor = a[row][col];
+            if factor == 0.0 {
+                continue;
+            }
+            for c in col..3 {
+                a[row][c] -= factor * a[col][c];
+            }
+            b[row] -= factor * b[col];
+        }
+    }
+
+    Some(b)
+}
+
+fn fit_circle_least_squares(
+    points: &[Point<f64>],
+    start: usize,
+    end: usize,
+) -> Option<(Point<f64>, f64)> {
+    if end < start + 2 {
+        return None;
+    }
+
+    let count = (end - start + 1) as f64;
+    let mut mean = Point::new(0.0, 0.0);
+    for point in &points[start..=end] {
+        mean.x += point.x;
+        mean.y += point.y;
+    }
+    mean.x /= count;
+    mean.y /= count;
+
+    let mut s_xx = 0.0;
+    let mut s_xy = 0.0;
+    let mut s_yy = 0.0;
+    let mut s_x = 0.0;
+    let mut s_y = 0.0;
+    let mut b_x = 0.0;
+    let mut b_y = 0.0;
+    let mut b_z = 0.0;
+
+    for point in &points[start..=end] {
+        let x = point.x - mean.x;
+        let y = point.y - mean.y;
+        let z = x * x + y * y;
+        s_xx += x * x;
+        s_xy += x * y;
+        s_yy += y * y;
+        s_x += x;
+        s_y += y;
+        b_x += x * z;
+        b_y += y * z;
+        b_z += z;
+    }
+
+    let [a, b, c] = solve_3x3(
+        [[s_xx, s_xy, s_x], [s_xy, s_yy, s_y], [s_x, s_y, count]],
+        [b_x, b_y, b_z],
+    )?;
+    let center = Point::new(mean.x + a * 0.5, mean.y + b * 0.5);
+    let radius_sq = c + (a * a + b * b) * 0.25;
+    if !radius_sq.is_finite() || radius_sq <= 0.0 {
+        return None;
+    }
+    Some((center, radius_sq.sqrt()))
+}
+
+fn endpoint_center_for_radius(
+    p0: Point<f64>,
+    p_end: Point<f64>,
+    radius: f64,
+    sweep_flag: bool,
+    preferred_center: Point<f64>,
+) -> Option<Point<f64>> {
+    let chord = p_end - p0;
+    let chord_len = chord.length();
+    if !radius.is_finite() || chord_len < 1.0e-12 || radius < chord_len * 0.5 {
+        return None;
+    }
+
+    let mid = Point::new((p0.x + p_end.x) * 0.5, (p0.y + p_end.y) * 0.5);
+    let half = chord_len * 0.5;
+    let h_sq = radius * radius - half * half;
+    if h_sq < -1.0e-9 {
+        return None;
+    }
+    let h = h_sq.max(0.0).sqrt();
+    let unit = chord / chord_len;
+    let perp = Vector::new(-unit.y, unit.x);
+    let candidates = [mid + perp * h, mid - perp * h];
+
+    candidates
+        .into_iter()
+        .filter(|center| {
+            let sweep = signed_sweep_from(p0 - *center, p_end - *center, sweep_flag);
+            (1.0e-9..=MAX_ARC_SWEEP).contains(&sweep)
+        })
+        .min_by(|left, right| {
+            distance(*left, preferred_center)
+                .partial_cmp(&distance(*right, preferred_center))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+fn fit_endpoint_preserving_least_squares_arc(
+    points: &[Point<f64>],
+    i: usize,
+    k: usize,
+) -> Option<(Point<f64>, f64, bool)> {
+    let (preferred_center, fitted_radius) = fit_circle_least_squares(points, i, k)?;
+    let mid_idx = i + (k - i) / 2;
+    let v_start = points[i] - preferred_center;
+    let v_mid = points[mid_idx] - preferred_center;
+    let cross = v_start.x * v_mid.y - v_start.y * v_mid.x;
+    if cross.abs() < 1.0e-12 {
+        return None;
+    }
+    let sweep_flag = cross > 0.0;
+    let chord_len = (points[k] - points[i]).length();
+    let endpoint_radius = fitted_radius.max(chord_len * 0.5 + 1.0e-9);
+    let center = endpoint_center_for_radius(
+        points[i],
+        points[k],
+        endpoint_radius,
+        sweep_flag,
+        preferred_center,
+    )?;
+    Some((center, endpoint_radius, sweep_flag))
+}
+
+fn validate_arc_candidate(
+    points: &[Point<f64>],
+    i: usize,
+    k: usize,
+    center: Point<f64>,
+    radius: f64,
+    sweep_flag: bool,
+    t_in: Vector<f64>,
+    tolerance: f64,
+    closed: bool,
+) -> Option<f64> {
+    if !radius.is_finite() || radius <= 0.0 {
+        return None;
+    }
+
+    let v_start = points[i] - center;
+    let v_end = points[k] - center;
+    let sweep_angle = signed_sweep_from(v_start, v_end, sweep_flag);
+    if !(1.0e-9..=MAX_ARC_SWEEP).contains(&sweep_angle) {
+        return None;
+    }
+
+    let arc_start_tangent = arc_tangent_at(center, points[i], sweep_flag)?;
+    if angle_between_unit(arc_start_tangent, t_in) > MAX_START_TANGENT_ERROR {
+        return None;
+    }
+
+    let radial_tolerance = tolerance * RADIAL_TOLERANCE_FACTOR;
+    for j in (i + 1)..k {
+        let v_j = points[j] - center;
+        let d = v_j.length();
+        if (d - radius).abs() > radial_tolerance {
+            return None;
+        }
+        let a_j = signed_sweep_from(v_start, v_j, sweep_flag);
+        if a_j < -1.0e-6 || a_j > sweep_angle + 1.0e-6 {
+            return None;
+        }
+    }
+
+    let arc_exit_tangent = arc_tangent_at(center, points[k], sweep_flag)?;
+    if let Some(poly_exit_tangent) = outgoing_polyline_tangent(points, k, closed)
+        .or_else(|| local_polyline_tangent(points, k, closed))
+    {
+        if angle_between_unit(arc_exit_tangent, poly_exit_tangent) > MAX_EXIT_TANGENT_ERROR {
+            return None;
+        }
+    }
+
+    for j in (i + 1)..k {
+        let Some(poly_tangent) = local_polyline_tangent(points, j, closed) else {
+            continue;
+        };
+        let arc_tangent = arc_tangent_at(center, points[j], sweep_flag)?;
+        if angle_between_unit(arc_tangent, poly_tangent) > MAX_INTERIOR_TANGENT_ERROR {
+            return None;
+        }
+    }
+
+    for j in i..k {
+        let Some(chord_tangent) = normalize_or_none(points[j + 1] - points[j]) else {
+            continue;
+        };
+        let midpoint = Point::new(
+            (points[j].x + points[j + 1].x) * 0.5,
+            (points[j].y + points[j + 1].y) * 0.5,
+        );
+        let arc_tangent = arc_tangent_at(center, midpoint, sweep_flag)?;
+        if angle_between_unit(arc_tangent, chord_tangent) > MAX_CHORD_TANGENT_ERROR {
+            return None;
+        }
+    }
+
+    for j in (i + 1)..k {
+        if signed_vertex_turn(points, j).is_some_and(|turn| turn.abs() > MAX_VERTEX_TURN) {
+            return None;
+        }
+    }
+    if has_short_bevel_cluster(points, i, k, MAX_VERTEX_TURN) {
+        return None;
+    }
+
+    let mid_idx = i + (k - i) / 2;
+    let v_mid = points[mid_idx] - center;
+    let cross = v_start.x * v_mid.y - v_start.y * v_mid.x;
+    if (cross > 0.0) != sweep_flag {
+        return None;
+    }
+
+    Some(radius * (1.0 - (sweep_angle * 0.5).cos()))
+}
+
 /// Greedy polyline → arc fitter with C1 continuity.
 ///
 /// Walks `points` forwards. Each fitted arc is constrained to start with the
@@ -493,9 +908,6 @@ fn polyline_to_arcs(points: &[Point<f64>], tolerance: f64) -> Vec<ArcOrLineSegme
         return polyline_to_line_segments(points);
     }
 
-    // Cap per-arc sweep so a single fit can't wrap most of a circle.
-    const MAX_SWEEP: f64 = std::f64::consts::PI;
-
     let n = points.len();
     let closed = points[0] == points[n - 1];
 
@@ -508,7 +920,6 @@ fn polyline_to_arcs(points: &[Point<f64>], tolerance: f64) -> Vec<ArcOrLineSegme
     // curves flattened at reasonable tolerance have per-vertex turns well
     // under 10°; 25° is comfortably above that while still catching miter
     // corners on letter glyph offset polygons.
-    const MAX_VERTEX_TURN: f64 = 25.0f64 * std::f64::consts::PI / 180.0;
 
     let mut result: Vec<ArcOrLineSegment<f64>> = Vec::new();
     let mut i = 0usize;
@@ -525,81 +936,57 @@ fn polyline_to_arcs(points: &[Point<f64>], tolerance: f64) -> Vec<ArcOrLineSegme
         // vertices is underdetermined against the start tangent and lets
         // a bad seed tangent cascade through subsequent fits.
         let mut k = i + 3;
+        let mut early_misses = 0usize;
+        const MAX_EARLY_MISSES: usize = 4;
         while k < n {
-            let Some((center, radius, sweep_flag)) =
+            let mut accepted: Option<(Point<f64>, f64, bool, f64)> = None;
+
+            if let Some((center, radius, sweep_flag)) =
                 fit_arc_from_start_tangent(points[i], t_in, points[k])
-            else {
-                break;
-            };
-
-            // Cap sweep angle before validating interior points.
-            let v_start = points[i] - center;
-            let v_end = points[k] - center;
-            let cos_sweep = (v_start.dot(v_end) / (radius * radius)).clamp(-1.0, 1.0);
-            let sweep_angle = cos_sweep.acos();
-            if sweep_angle > MAX_SWEEP {
-                break;
-            }
-
-            // Sagitta = max perpendicular distance from chord to arc.
-            // Below, we use it to reject arcs that are visually straight
-            // lines (huge R, tiny deviation): R-form gcode with giant R
-            // values breaks NC viewers. Compute here; apply after the
-            // other validity checks so we can keep extending k when the
-            // current arc is simply too short to have enough sweep yet.
-            let sagitta = radius * (1.0 - (sweep_angle * 0.5).cos());
-
-            // Every interior point must lie on the circle AND be angularly
-            // between start and end in the sweep direction.
-            let mut ok = true;
-            for j in (i + 1)..k {
-                let v_j = points[j] - center;
-                let d = v_j.length();
-                if (d - radius).abs() > tolerance {
-                    ok = false;
-                    break;
-                }
-                let a_j = signed_sweep_from(v_start, v_j, sweep_flag);
-                if a_j < -1.0e-6 || a_j > sweep_angle + 1.0e-6 {
-                    ok = false;
-                    break;
+            {
+                if let Some(sagitta) = validate_arc_candidate(
+                    points, i, k, center, radius, sweep_flag, t_in, tolerance, closed,
+                ) {
+                    accepted = Some((center, radius, sweep_flag, sagitta));
                 }
             }
-            if !ok {
-                break;
+
+            if accepted.is_none() {
+                let mid_idx = i + (k - i) / 2;
+                if mid_idx > i && mid_idx < k {
+                    if let Some((center, radius, sweep_flag)) =
+                        fit_arc_through_three_points(points[i], points[mid_idx], points[k])
+                    {
+                        if let Some(sagitta) = validate_arc_candidate(
+                            points, i, k, center, radius, sweep_flag, t_in, tolerance, closed,
+                        ) {
+                            accepted = Some((center, radius, sweep_flag, sagitta));
+                        }
+                    }
+                }
             }
 
-            // Corner detection: if any interior vertex makes a sharp turn in
-            // the underlying polyline, it's a genuine corner (e.g. a K's
-            // miter junction). An arc that sweeps through it would curve
-            // across empty space away from the real outline, even if the
-            // corner's vertices coincidentally share a circle.
-            let mut corner = false;
-            for j in (i + 1)..k {
-                let e_prev = points[j] - points[j - 1];
-                let e_next = points[j + 1] - points[j];
-                let lp = e_prev.length();
-                let ln = e_next.length();
-                if lp < 1.0e-9 || ln < 1.0e-9 {
+            if accepted.is_none() {
+                if let Some((center, radius, sweep_flag)) =
+                    fit_endpoint_preserving_least_squares_arc(points, i, k)
+                {
+                    if let Some(sagitta) = validate_arc_candidate(
+                        points, i, k, center, radius, sweep_flag, t_in, tolerance, closed,
+                    ) {
+                        accepted = Some((center, radius, sweep_flag, sagitta));
+                    }
+                }
+            }
+
+            let Some((center, radius, sweep_flag, sagitta)) = accepted else {
+                if best.is_none() && early_misses < MAX_EARLY_MISSES {
+                    early_misses += 1;
+                    k += 1;
                     continue;
                 }
-                let cos = (e_prev.dot(e_next) / (lp * ln)).clamp(-1.0, 1.0);
-                if cos.acos() > MAX_VERTEX_TURN {
-                    corner = true;
-                    break;
-                }
-            }
-            if corner {
                 break;
-            }
-
-            // Confirm the arc goes the right way around the circle.
-            let mid_idx = i + (k - i) / 2;
-            let v_mid = points[mid_idx] - center;
-            let cross = v_start.x * v_mid.y - v_start.y * v_mid.x;
-            if (cross > 0.0) != sweep_flag {
-                break;
-            }
+            };
+            early_misses = 0;
 
             // Only record as `best` when the arc is deep enough to be
             // distinguishable from a straight line within tolerance.
@@ -648,7 +1035,9 @@ fn polyline_to_arcs(points: &[Point<f64>], tolerance: f64) -> Vec<ArcOrLineSegme
                 from: points[i],
                 to: points[i + 1],
             }));
-            if let Some(t) = normalize_or_none(points[i + 1] - points[i]) {
+            if let Some(t) = local_polyline_tangent(points, i + 1, closed)
+                .or_else(|| normalize_or_none(points[i + 1] - points[i]))
+            {
                 t_in = t;
             }
             i += 1;
@@ -821,13 +1210,9 @@ fn build_fill_groups(
                                 break 'fill;
                             }
                         }
-                        if let Some(path) = contour_toolpath(
-                            contour,
-                            depth,
-                            target_depth,
-                            tolerance,
-                            refit_arcs,
-                        ) {
+                        if let Some(path) =
+                            contour_toolpath(contour, depth, target_depth, tolerance, refit_arcs)
+                        {
                             paths.push(path);
                             path_count += 1;
                         }
@@ -1492,8 +1877,14 @@ pub fn svg2program_engraving<'a, 'input: 'a>(
     engraving: &EngravingConfig,
 ) -> Result<(Vec<Token<'input>>, Vec<GenerationWarning>), String> {
     let circular_interpolation = machine.supported_functionality().circular_interpolation;
-    let (groups, _thickened, warnings) =
-        collect_engraving_groups(doc, config, engraving, options, false, circular_interpolation)?;
+    let (groups, _thickened, warnings) = collect_engraving_groups(
+        doc,
+        config,
+        engraving,
+        options,
+        false,
+        circular_interpolation,
+    )?;
     if groups.is_empty() {
         return Err("No engravable SVG geometry was found. Add fills and/or strokes.".into());
     }
@@ -1501,7 +1892,13 @@ pub fn svg2program_engraving<'a, 'input: 'a>(
     let mut machine = machine;
     let mut program = vec![];
     append_engraving_program_header(&mut program, &mut machine);
-    append_engraving_paths(&mut program, &mut machine, engraving, groups, config.tolerance);
+    append_engraving_paths(
+        &mut program,
+        &mut machine,
+        engraving,
+        groups,
+        config.tolerance,
+    );
     append_engraving_program_footer(&mut program, &mut machine);
 
     Ok((program, warnings))
@@ -1648,7 +2045,24 @@ mod polyline_arc_tests {
         }
     }
 
-    fn sample_circle(cx: f64, cy: f64, r: f64, start_deg: f64, end_deg: f64, n: usize) -> Vec<Point<f64>> {
+    fn has_arc(segs: &[ArcOrLineSegment<f64>]) -> bool {
+        segs.iter()
+            .any(|seg| matches!(seg, ArcOrLineSegment::Arc(_)))
+    }
+
+    fn all_lines(segs: &[ArcOrLineSegment<f64>]) -> bool {
+        segs.iter()
+            .all(|seg| matches!(seg, ArcOrLineSegment::Line(_)))
+    }
+
+    fn sample_circle(
+        cx: f64,
+        cy: f64,
+        r: f64,
+        start_deg: f64,
+        end_deg: f64,
+        n: usize,
+    ) -> Vec<Point<f64>> {
         let mut pts = Vec::with_capacity(n + 1);
         for k in 0..=n {
             let t = k as f64 / n as f64;
@@ -1656,6 +2070,75 @@ mod polyline_arc_tests {
             pts.push(Point::new(cx + r * angle.cos(), cy + r * angle.sin()));
         }
         pts
+    }
+
+    #[test]
+    fn small_radius_curve_with_coarse_chords_still_fits_arcs() {
+        // R=1 mm, 15° chords: this is the visible-faceting case when arc
+        // refitting falls back to G1 for tool-radius-like curves.
+        let pts = sample_circle(0.0, 0.0, 1.0, 0.0, 90.0, 6);
+        let segs = polyline_to_arcs(&pts, 0.01);
+        assert!(
+            has_arc(&segs),
+            "small smooth radius should emit at least one arc"
+        );
+    }
+
+    #[test]
+    fn noisy_small_radius_curve_still_fits_arcs() {
+        let mut pts = Vec::new();
+        for k in 0..=24 {
+            let t = k as f64 / 24.0;
+            let angle = (180.0 * t).to_radians();
+            let radius = 1.0 + 0.01 * (angle * 3.0).sin();
+            pts.push(Point::new(radius * angle.cos(), radius * angle.sin()));
+        }
+
+        let segs = polyline_to_arcs(&pts, 0.01);
+        assert!(
+            has_arc(&segs),
+            "±0.01 mm radius wobble should not force all-G1 faceting"
+        );
+    }
+
+    #[test]
+    fn exit_tangent_mismatch_rejects_arc_into_corner() {
+        let mut pts = sample_circle(0.0, 0.0, 5.0, 0.0, 45.0, 3);
+        let corner = *pts.last().unwrap();
+        pts.push(Point::new(corner.x - 1.0, corner.y));
+
+        let segs = polyline_to_arcs(&pts, 0.01);
+        assert!(
+            all_lines(&segs),
+            "arc ending at a point whose outgoing tangent diverges should be rejected"
+        );
+    }
+
+    #[test]
+    fn short_bevel_cluster_does_not_fit_arc_across_corner() {
+        let turn_20 = 20.0f64.to_radians();
+        let turn_40 = 40.0f64.to_radians();
+        let p3 = Point::new(0.0, 0.0);
+        let p4 = Point::new(0.2 * turn_20.cos(), 0.2 * turn_20.sin());
+        let next = Vector::new(turn_40.cos(), turn_40.sin());
+        let pts = vec![
+            Point::new(-3.0, 0.0),
+            Point::new(-2.0, 0.0),
+            Point::new(-1.0, 0.0),
+            p3,
+            p4,
+            p4 + next,
+            p4 + next * 2.0,
+            p4 + next * 3.0,
+        ];
+
+        assert!(has_short_bevel_cluster(&pts, 1, 5, 25.0f64.to_radians()));
+
+        let segs = polyline_to_arcs(&pts, 0.01);
+        assert!(
+            all_lines(&segs),
+            "two sub-threshold bevel turns must not be collapsed into a false arc"
+        );
     }
 
     #[test]
@@ -1779,7 +2262,10 @@ mod polyline_arc_tests {
         // At least the corner and first leg must be straight; no huge arcs.
         for seg in &segs {
             if let ArcOrLineSegment::Arc(a) = seg {
-                assert!(a.radii.x < 50.0, "unexpected large-radius arc across corner");
+                assert!(
+                    a.radii.x < 50.0,
+                    "unexpected large-radius arc across corner"
+                );
             }
         }
     }

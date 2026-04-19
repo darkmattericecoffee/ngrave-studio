@@ -179,6 +179,7 @@ export function TopBar({
           </Button>
           <ButtonGroup
             className="rounded-full"
+            aria-label="Export G-code"
           >
             <Button
               className="rounded-l-full bg-emerald-600 px-3 gap-1.5 text-[14px] font-medium text-white hover:bg-emerald-500 disabled:bg-emerald-900/40 disabled:text-white/35"

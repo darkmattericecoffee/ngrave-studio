@@ -25,6 +25,7 @@ export function PreviewCanvas() {
   const showSvgOverlay = useEditorStore((s) => s.preview.showSvgOverlay)
   const showCutOrder = useEditorStore((s) => s.preview.showCutOrder)
   const setPlaybackDistance = useEditorStore((s) => s.setPlaybackDistance)
+  const setSceneReady = useEditorStore((s) => s.setSceneReady)
   const materialPreset = useEditorStore((s) => s.preview.materialPreset)
   const previewToolShape = useEditorStore((s) => s.preview.toolShape)
 
@@ -129,7 +130,10 @@ export function PreviewCanvas() {
     requestRender()
   }, [sceneRef, previewSnapshot, previewToolShape, requestRender])
 
-  // Build stock/sweep meshes when toolpaths change
+  // Build stock/sweep meshes when toolpaths change. After the meshes are in
+  // the scene and we've scheduled a render, wait two animation frames so the
+  // browser actually paints the first frame, then flip `isSceneReady` so the
+  // init overlay in App.tsx can dismiss itself without exposing a grey gap.
   useEffect(() => {
     const state = sceneRef.current
     if (!state || !toolpaths || !stockBounds || !previewSnapshot) return
@@ -151,7 +155,18 @@ export function PreviewCanvas() {
     state.sweepGroup.add(sweepMesh)
 
     requestRender()
-  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, previewToolShape, stockTexture, requestRender])
+
+    let rafB = 0
+    const rafA = requestAnimationFrame(() => {
+      rafB = requestAnimationFrame(() => {
+        setSceneReady(true)
+      })
+    })
+    return () => {
+      cancelAnimationFrame(rafA)
+      cancelAnimationFrame(rafB)
+    }
+  }, [sceneRef, toolpaths, stockBounds, previewSnapshot, previewToolShape, stockTexture, requestRender, setSceneReady])
 
   // Auto-fit camera to toolpath bounding box when GCode is generated
   useEffect(() => {

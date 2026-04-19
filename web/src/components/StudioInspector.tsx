@@ -205,7 +205,7 @@ function DesignTabContent() {
           <div className="grid grid-cols-2 gap-3">
             <div className="flex min-w-0 flex-col gap-1">
               <span className="text-xs text-muted-foreground">Horizontal</span>
-              <ButtonGroup orientation="horizontal" variant="tertiary">
+              <ButtonGroup orientation="horizontal" variant="tertiary" aria-label="Horizontal alignment">
                 <Button isIconOnly onPress={() => alignSelectedNodes('left')}>
                   <AppIcon icon={Icons.alignLeft} className="h-4 w-4" />
                 </Button>
@@ -221,7 +221,7 @@ function DesignTabContent() {
             </div>
             <div className="flex min-w-0 flex-col gap-1">
               <span className="text-xs text-muted-foreground">Vertical</span>
-              <ButtonGroup orientation="horizontal" variant="tertiary">
+              <ButtonGroup orientation="horizontal" variant="tertiary" aria-label="Vertical alignment">
                 <Button isIconOnly onPress={() => alignSelectedNodes('top')}>
                   <AppIcon icon={Icons.alignTop} className="h-4 w-4" />
                 </Button>
@@ -381,7 +381,7 @@ function DesignTabContent() {
             <div className="space-y-2">
               <SubsectionHeading title="Rotation" />
               <div className="flex flex-wrap items-center gap-2">
-                <ButtonGroup orientation="horizontal" variant="tertiary">
+                <ButtonGroup orientation="horizontal" variant="tertiary" aria-label="Rotation">
                   <Button
                     isIconOnly
                     aria-label={`Rotate ${rotationDegrees} degrees counter-clockwise`}
