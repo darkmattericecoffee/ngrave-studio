@@ -6,6 +6,7 @@ export type {
   ToolShape,
   FillMode,
   EngraveType,
+  PathAnchor,
   Settings,
   SvgTreeNode,
   PreparedSvgDocument,

@@ -10,8 +10,8 @@ use i_overlay::{
     },
 };
 use lyon_geom::{
-    euclid::default::Transform2D, CubicBezierSegment, LineSegment, Point, QuadraticBezierSegment,
-    SvgArc, Vector,
+    CubicBezierSegment, LineSegment, Point, QuadraticBezierSegment, SvgArc, Vector,
+    euclid::default::Transform2D,
 };
 use roxmltree::Document;
 use svgtypes::{Length, LengthUnit};
@@ -20,12 +20,12 @@ use uom::si::{
     length::{inch, millimeter},
 };
 
-use super::{visit, ConversionConfig, ConversionOptions, ConversionVisitor};
+use super::{ConversionConfig, ConversionOptions, ConversionVisitor, PathAnchor, visit};
 use crate::{
+    EngravingConfig, EngravingOperation, FillMode, GenerationWarning, Machine, Turtle,
     arc::{ArcOrLineSegment, FlattenWithArcs},
     converter::{selector::SelectorList, units::CSS_DEFAULT_DPI},
     turtle::{PaintStyle, SvgFillRule},
-    EngravingConfig, EngravingOperation, FillMode, GenerationWarning, Machine, Turtle,
 };
 
 type Contour = Vec<[f64; 2]>;
@@ -1384,37 +1384,19 @@ fn optimize_scheduled_operation_groups_from(
     (ordered, current)
 }
 
-fn schedule_operation_groups_by_depth(
+fn schedule_operation_groups(
     operation_id: &str,
     operation_name: &str,
     groups: Vec<OperationGroup>,
-) -> BTreeMap<u64, Vec<ScheduledOperationGroup>> {
-    let mut scheduled = BTreeMap::<u64, Vec<ScheduledOperationGroup>>::new();
-
-    for group in groups {
-        let reversible = group.reversible;
-        let mut depth_paths = BTreeMap::<u64, Vec<Toolpath>>::new();
-
-        for path in group.paths {
-            depth_paths
-                .entry(path.depth.to_bits())
-                .or_default()
-                .push(path);
-        }
-
-        for (depth_key, paths) in depth_paths {
-            scheduled
-                .entry(depth_key)
-                .or_default()
-                .push(ScheduledOperationGroup {
-                    operation_id: operation_id.to_string(),
-                    operation_name: operation_name.to_string(),
-                    group: OperationGroup { paths, reversible },
-                });
-        }
-    }
-
-    scheduled
+) -> Vec<ScheduledOperationGroup> {
+    groups
+        .into_iter()
+        .map(|group| ScheduledOperationGroup {
+            operation_id: operation_id.to_string(),
+            operation_name: operation_name.to_string(),
+            group,
+        })
+        .collect()
 }
 
 fn collect_warnings(
@@ -1446,6 +1428,92 @@ fn toolpath_bounds(groups: &[OperationGroup]) -> Option<(f64, f64, f64, f64)> {
     }
 
     Some((min_x, min_y, max_x, max_y))
+}
+
+fn expand_bounds(
+    bounds: Option<(f64, f64, f64, f64)>,
+    next: Option<(f64, f64, f64, f64)>,
+) -> Option<(f64, f64, f64, f64)> {
+    match (bounds, next) {
+        (Some((min_x, min_y, max_x, max_y)), Some((n_min_x, n_min_y, n_max_x, n_max_y))) => Some((
+            min_x.min(n_min_x),
+            min_y.min(n_min_y),
+            max_x.max(n_max_x),
+            max_y.max(n_max_y),
+        )),
+        (None, Some(next)) => Some(next),
+        (Some(bounds), None) => Some(bounds),
+        (None, None) => None,
+    }
+}
+
+fn anchor_point_for_bounds(anchor: PathAnchor, bounds: Option<(f64, f64, f64, f64)>) -> Point<f64> {
+    let Some((min_x, min_y, max_x, max_y)) = bounds else {
+        return Point::new(0.0, 0.0);
+    };
+
+    let mid_x = (min_x + max_x) * 0.5;
+    let mid_y = (min_y + max_y) * 0.5;
+    let x = match anchor {
+        PathAnchor::TopLeft | PathAnchor::MiddleLeft | PathAnchor::BottomLeft => min_x,
+        PathAnchor::TopCenter | PathAnchor::Center | PathAnchor::BottomCenter => mid_x,
+        PathAnchor::TopRight | PathAnchor::MiddleRight | PathAnchor::BottomRight => max_x,
+    };
+    let y = match anchor {
+        PathAnchor::TopLeft | PathAnchor::TopCenter | PathAnchor::TopRight => max_y,
+        PathAnchor::MiddleLeft | PathAnchor::Center | PathAnchor::MiddleRight => mid_y,
+        PathAnchor::BottomLeft | PathAnchor::BottomCenter | PathAnchor::BottomRight => min_y,
+    };
+
+    Point::new(x, y)
+}
+
+fn append_cut_metadata<'input>(
+    program: &mut Vec<Token<'input>>,
+    anchor: PathAnchor,
+    bounds: Option<(f64, f64, f64, f64)>,
+) {
+    if let Some((min_x, min_y, max_x, max_y)) = bounds {
+        program.push(comment_token(format!(
+            " BOUNDS: X {:.3} {:.3}, Y {:.3} {:.3}",
+            min_x, max_x, min_y, max_y
+        )));
+    }
+    program.push(comment_token(format!(
+        " ANCHOR: {}",
+        anchor.as_gcode_token()
+    )));
+}
+
+fn translate_operation_groups(groups: &mut [OperationGroup], offset: Vector<f64>) {
+    for group in groups {
+        for path in &mut group.paths {
+            path.translate(offset);
+        }
+    }
+}
+
+fn translate_scheduled_operation_groups(
+    groups: &mut [ScheduledOperationGroup],
+    offset: Vector<f64>,
+) {
+    for scheduled in groups {
+        translate_operation_groups(std::slice::from_mut(&mut scheduled.group), offset);
+    }
+}
+
+fn translate_bounds(
+    bounds: Option<(f64, f64, f64, f64)>,
+    offset: Vector<f64>,
+) -> Option<(f64, f64, f64, f64)> {
+    bounds.map(|(min_x, min_y, max_x, max_y)| {
+        (
+            min_x + offset.x,
+            min_y + offset.y,
+            max_x + offset.x,
+            max_y + offset.y,
+        )
+    })
 }
 
 fn comment_token<'input>(text: impl Into<String>) -> Token<'input> {
@@ -1877,7 +1945,7 @@ pub fn svg2program_engraving<'a, 'input: 'a>(
     engraving: &EngravingConfig,
 ) -> Result<(Vec<Token<'input>>, Vec<GenerationWarning>), String> {
     let circular_interpolation = machine.supported_functionality().circular_interpolation;
-    let (groups, _thickened, warnings) = collect_engraving_groups(
+    let (mut groups, _thickened, warnings) = collect_engraving_groups(
         doc,
         config,
         engraving,
@@ -1891,6 +1959,12 @@ pub fn svg2program_engraving<'a, 'input: 'a>(
 
     let mut machine = machine;
     let mut program = vec![];
+    let cut_bounds = toolpath_bounds(&groups);
+    let anchor_point = anchor_point_for_bounds(config.anchor, cut_bounds);
+    let anchor_offset = Vector::new(-anchor_point.x, -anchor_point.y);
+    let shifted_bounds = translate_bounds(cut_bounds, anchor_offset);
+    translate_operation_groups(&mut groups, anchor_offset);
+    append_cut_metadata(&mut program, config.anchor, shifted_bounds);
     append_engraving_program_header(&mut program, &mut machine);
     append_engraving_paths(
         &mut program,
@@ -1933,10 +2007,9 @@ pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
     let mut program = vec![];
     let mut warnings = Vec::new();
     let mut emitted_any_geometry = false;
-    let mut scheduled_groups = BTreeMap::<u64, Vec<ScheduledOperationGroup>>::new();
+    let mut scheduled_groups = Vec::<ScheduledOperationGroup>::new();
+    let mut cut_bounds: Option<(f64, f64, f64, f64)> = None;
     let total_ops = operations.len();
-
-    append_engraving_program_header(&mut program, &mut machine);
 
     for (op_index, operation) in operations.iter().enumerate() {
         if operation.selector_filter.trim().is_empty() {
@@ -1969,14 +2042,12 @@ pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
 
         if !groups.is_empty() {
             emitted_any_geometry = true;
-            for (depth_key, depth_groups) in
-                schedule_operation_groups_by_depth(&operation.id, &operation.name, groups)
-            {
-                scheduled_groups
-                    .entry(depth_key)
-                    .or_default()
-                    .extend(depth_groups);
-            }
+            cut_bounds = expand_bounds(cut_bounds, toolpath_bounds(&groups));
+            scheduled_groups.extend(schedule_operation_groups(
+                &operation.id,
+                &operation.name,
+                groups,
+            ));
         }
 
         if !thickened_groups.is_empty() {
@@ -1984,14 +2055,12 @@ pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
             let thickened_id = format!("{}-thickened", operation.id);
             let thickened_name = format!("{} (thickened)", operation.name);
             let optimized = optimize_operation_groups(thickened_groups);
-            for (depth_key, depth_groups) in
-                schedule_operation_groups_by_depth(&thickened_id, &thickened_name, optimized)
-            {
-                scheduled_groups
-                    .entry(depth_key)
-                    .or_default()
-                    .extend(depth_groups);
-            }
+            cut_bounds = expand_bounds(cut_bounds, toolpath_bounds(&optimized));
+            scheduled_groups.extend(schedule_operation_groups(
+                &thickened_id,
+                &thickened_name,
+                optimized,
+            ));
         }
     }
 
@@ -2003,45 +2072,46 @@ pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
         cb(0, 0, "optimizing");
     }
 
-    // Preserve the operation order emitted by the frontend (which now encodes
-    // SVG-group cut ordering with a spatial bias). Within each depth bucket the
-    // bucket vec is already in operation iteration order because
-    // `schedule_operation_groups_by_depth` .extend()'s in that order. Running
-    // the nearest-neighbor pass *across* operations would shuffle shapes from
-    // different SVG groups into each other, which defeats the whole point —
-    // the hand-held CNC drifts when the tool hops across the workpiece. We
-    // therefore chunk the bucket into contiguous runs sharing the same
-    // operation id and TSP-optimize only *inside* each chunk.
-    let mut current = Point::new(0.0, 0.0);
-    for (_depth_key, groups) in scheduled_groups {
-        let mut cursor = 0;
-        while cursor < groups.len() {
-            let op_id = groups[cursor].operation_id.clone();
-            let mut end = cursor + 1;
-            while end < groups.len() && groups[end].operation_id == op_id {
-                end += 1;
-            }
-            let chunk: Vec<ScheduledOperationGroup> = groups[cursor..end].to_vec();
-            cursor = end;
+    let anchor_point = anchor_point_for_bounds(config.anchor, cut_bounds);
+    let anchor_offset = Vector::new(-anchor_point.x, -anchor_point.y);
+    let shifted_bounds = translate_bounds(cut_bounds, anchor_offset);
+    translate_scheduled_operation_groups(&mut scheduled_groups, anchor_offset);
 
-            let (ordered_groups, next_current) =
-                optimize_scheduled_operation_groups_from(chunk, current);
-            current = next_current;
-            for scheduled in ordered_groups {
-                append_operation_start_marker(
-                    &mut program,
-                    &scheduled.operation_id,
-                    &scheduled.operation_name,
-                );
-                append_engraving_paths(
-                    &mut program,
-                    &mut machine,
-                    engraving,
-                    vec![scheduled.group],
-                    config.tolerance,
-                );
-                append_operation_end_marker(&mut program, &scheduled.operation_id);
-            }
+    append_cut_metadata(&mut program, config.anchor, shifted_bounds);
+    append_engraving_program_header(&mut program, &mut machine);
+
+    // Preserve the operation order emitted by the frontend. Running the
+    // nearest-neighbor pass across operations would shuffle manually ordered
+    // SVG groups back into each other, so contiguous runs sharing an operation
+    // id are TSP-optimized only inside that run.
+    let mut current = Point::new(0.0, 0.0);
+    let mut cursor = 0;
+    while cursor < scheduled_groups.len() {
+        let op_id = scheduled_groups[cursor].operation_id.clone();
+        let mut end = cursor + 1;
+        while end < scheduled_groups.len() && scheduled_groups[end].operation_id == op_id {
+            end += 1;
+        }
+        let chunk: Vec<ScheduledOperationGroup> = scheduled_groups[cursor..end].to_vec();
+        cursor = end;
+
+        let (ordered_groups, next_current) =
+            optimize_scheduled_operation_groups_from(chunk, current);
+        current = next_current;
+        for scheduled in ordered_groups {
+            append_operation_start_marker(
+                &mut program,
+                &scheduled.operation_id,
+                &scheduled.operation_name,
+            );
+            append_engraving_paths(
+                &mut program,
+                &mut machine,
+                engraving,
+                vec![scheduled.group],
+                config.tolerance,
+            );
+            append_operation_end_marker(&mut program, &scheduled.operation_id);
         }
     }
 

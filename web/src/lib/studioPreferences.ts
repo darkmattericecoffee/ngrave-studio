@@ -48,6 +48,18 @@ function isCameraType(value: unknown): value is CameraType {
   return value === 'perspective' || value === 'orthographic'
 }
 
+function isPathAnchor(value: unknown): value is MachiningSettings['pathAnchor'] {
+  return value === 'TopLeft'
+    || value === 'TopCenter'
+    || value === 'TopRight'
+    || value === 'MiddleLeft'
+    || value === 'Center'
+    || value === 'MiddleRight'
+    || value === 'BottomLeft'
+    || value === 'BottomCenter'
+    || value === 'BottomRight'
+}
+
 function optionalNumber(value: unknown): number | null | undefined {
   if (value === null) return null
   return isNumber(value) ? value : undefined
@@ -98,6 +110,14 @@ function sanitizeMachiningSettings(value: unknown): Partial<MachiningSettings> |
   if (isNumber(value.tabWidth) && value.tabWidth > 0) next.tabWidth = value.tabWidth
   if (isNumber(value.tabHeight) && value.tabHeight > 0) next.tabHeight = value.tabHeight
   if (isNumber(value.tabSpacing) && value.tabSpacing > 0) next.tabSpacing = value.tabSpacing
+  if (isBoolean(value.optimizePathOrder)) next.optimizePathOrder = value.optimizePathOrder
+  if (isPathAnchor(value.pathAnchor)) next.pathAnchor = value.pathAnchor
+  if (value.cutOrderStrategy === 'svg' || value.cutOrderStrategy === 'ltr' || value.cutOrderStrategy === 'btt' || value.cutOrderStrategy === 'manual') {
+    next.cutOrderStrategy = value.cutOrderStrategy
+  }
+  if (Array.isArray(value.manualCutOrder) && value.manualCutOrder.every((id) => typeof id === 'string')) {
+    next.manualCutOrder = value.manualCutOrder
+  }
 
   return Object.keys(next).length > 0 ? next : undefined
 }

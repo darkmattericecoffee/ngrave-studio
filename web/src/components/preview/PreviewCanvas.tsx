@@ -1,6 +1,6 @@
 import { useRef, useEffect, useState } from 'react'
 import * as THREE from 'three'
-import { sampleProgramAtDistance } from '@svg2gcode/bridge/viewer'
+import { advanceProgramDistance, sampleProgramAtDistance } from '@svg2gcode/bridge/viewer'
 
 import { useEditorStore } from '../../store'
 import { MATERIAL_PRESETS } from '../../lib/materialPresets'
@@ -324,8 +324,6 @@ export function PreviewCanvas() {
     let rafId = 0
     let cancelled = false
     let lastTime = 0
-    let accumulator = 0
-
     const animate = (time: number) => {
       if (cancelled) return
 
@@ -335,12 +333,15 @@ export function PreviewCanvas() {
       }
 
       const delta = lastTime === 0 ? 0 : (time - lastTime) / 1000
-      accumulator += delta * preview.playbackRate
       lastTime = time
 
-      if (accumulator >= 0.1) {
-        let nextDistance = preview.playbackDistance + accumulator
-        accumulator = 0
+      if (delta > 0) {
+        let nextDistance = advanceProgramDistance(
+          preview.parsedProgram,
+          preview.playbackDistance,
+          delta,
+          preview.playbackRate,
+        )
 
         if (nextDistance >= preview.parsedProgram.totalDistance) {
           if (preview.loopPlayback) {

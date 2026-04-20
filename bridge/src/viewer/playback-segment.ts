@@ -1,5 +1,7 @@
 import { clamp } from "../utils";
-import type { ParsedSegment } from "./parse-gcode";
+import type { ParsedProgram, ParsedSegment } from "./parse-gcode";
+
+const RAPID_PLAYBACK_MULTIPLIER = 6;
 
 export function clipSegmentToDistance(
   segment: ParsedSegment,
@@ -59,6 +61,68 @@ export function splitSegmentAtDistance(
       cumulativeDistanceStart: currentDistance,
     } satisfies ParsedSegment,
   };
+}
+
+export function advanceProgramDistance(
+  program: ParsedProgram,
+  currentDistance: number,
+  deltaSeconds: number,
+  baseRateMmPerSecond: number,
+): number {
+  if (
+    program.totalDistance <= 0 ||
+    program.segments.length === 0 ||
+    deltaSeconds <= 0 ||
+    baseRateMmPerSecond <= 0
+  ) {
+    return clamp(currentDistance, 0, program.totalDistance);
+  }
+
+  let remainingSeconds = deltaSeconds;
+  let distance = clamp(currentDistance, 0, program.totalDistance);
+  let segmentIndex = program.segments.findIndex(
+    (segment) => distance < segment.cumulativeDistanceEnd,
+  );
+  if (segmentIndex < 0) {
+    return program.totalDistance;
+  }
+
+  while (remainingSeconds > 0 && segmentIndex < program.segments.length) {
+    const segment = program.segments[segmentIndex];
+    const segmentEnd = segment.cumulativeDistanceEnd;
+    const remainingDistance = segmentEnd - distance;
+    if (remainingDistance <= 1.0e-9) {
+      segmentIndex += 1;
+      distance = segmentEnd;
+      continue;
+    }
+
+    const rate = playbackRateForSegment(segment, baseRateMmPerSecond);
+    const segmentSeconds = remainingDistance / rate;
+    if (remainingSeconds < segmentSeconds) {
+      return distance + remainingSeconds * rate;
+    }
+
+    remainingSeconds -= segmentSeconds;
+    distance = segmentEnd;
+    segmentIndex += 1;
+  }
+
+  return clamp(distance, 0, program.totalDistance);
+}
+
+function playbackRateForSegment(
+  segment: ParsedSegment,
+  baseRateMmPerSecond: number,
+): number {
+  if (
+    segment.motionKind === "rapid" ||
+    (segment.motionKind === "retract" && segment.command === "G0")
+  ) {
+    return baseRateMmPerSecond * RAPID_PLAYBACK_MULTIPLIER;
+  }
+
+  return baseRateMmPerSecond;
 }
 
 function interpolatePoint(segment: ParsedSegment, t: number) {

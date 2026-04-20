@@ -21,7 +21,7 @@ interface SerializeContext {
 }
 
 function effectiveFill(node: CanvasNode, ctx: SerializeContext, fallback: string = 'none'): string {
-  if (node.fill) return node.fill
+  if ('fill' in node && node.fill) return node.fill
   if (!ctx.forcePocketFill) return fallback
   if (isGeometricallyOpen(node)) return fallback
   const resolved = normalizeEngraveType(resolveNodeCncMetadata(node, ctx.nodesById).engraveType)

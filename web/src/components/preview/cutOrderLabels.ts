@@ -92,7 +92,7 @@ export function buildCutOrderLabels(
       : 0
     const fill = rapidColorScale
       ? rapidDistanceCssColor(incomingRapidDistance, rapidColorScale)
-      : hexFromNumberOrString(firstCut.operationColor)
+      : hexFromNumberOrString(firstCut.operationColor ?? undefined)
     const canvas = drawBadge(visibleIndex, fill)
     const texture = new THREE.CanvasTexture(canvas)
     texture.anisotropy = 4

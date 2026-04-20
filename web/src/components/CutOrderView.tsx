@@ -131,7 +131,7 @@ export function CutOrderView({
                         !node.visible && 'opacity-50',
                         isDragging && 'opacity-40',
                       )}
-                      onMouseDown={(e) => onSelect(leaf.nodeId, e)}
+                      onClick={(e) => onSelect(leaf.nodeId, e)}
                       onMouseEnter={() => onHover(leaf.nodeId)}
                       onMouseLeave={onHoverLeave}
                       onContextMenu={(e) => onContextMenu(leaf.nodeId, e)}

@@ -13,8 +13,7 @@ use uom::si::{
 
 use self::units::CSS_DEFAULT_DPI;
 use crate::{
-    Machine, Turtle,
-    cluster,
+    Machine, Turtle, cluster,
     converter::selector::SelectorList,
     tsp,
     turtle::{
@@ -33,7 +32,45 @@ mod transform;
 mod units;
 mod visit;
 
-pub use cam::{svg2program_engraving, svg2program_engraving_multi, svg2program_engraving_multi_with_progress};
+pub use cam::{
+    svg2program_engraving, svg2program_engraving_multi, svg2program_engraving_multi_with_progress,
+};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum PathAnchor {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    Center,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl Default for PathAnchor {
+    fn default() -> Self {
+        Self::BottomLeft
+    }
+}
+
+impl PathAnchor {
+    pub fn as_gcode_token(self) -> &'static str {
+        match self {
+            Self::TopLeft => "TopLeft",
+            Self::TopCenter => "TopCenter",
+            Self::TopRight => "TopRight",
+            Self::MiddleLeft => "MiddleLeft",
+            Self::Center => "Center",
+            Self::MiddleRight => "MiddleRight",
+            Self::BottomLeft => "BottomLeft",
+            Self::BottomCenter => "BottomCenter",
+            Self::BottomRight => "BottomRight",
+        }
+    }
+}
 
 /// High-level output configuration
 #[derive(Debug, Clone, PartialEq)]
@@ -53,6 +90,9 @@ pub struct ConversionConfig {
     /// Reorder paths to minimize travel time
     #[cfg_attr(feature = "serde", serde(default))]
     pub optimize_path_order: bool,
+    /// Work anchor over generated cut-geometry bounds. Firmware applies the offset.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub anchor: PathAnchor,
     /// If set, after path-order optimization, short strokes whose endpoints fall
     /// within this radius (mm) of a longer stroke get spliced into that longer
     /// stroke at the nearest command boundary. Reduces positional drift on
@@ -81,6 +121,7 @@ impl Default for ConversionConfig {
             origin: zero_origin(),
             extra_attribute_name: None,
             optimize_path_order: true,
+            anchor: PathAnchor::BottomLeft,
             cluster_detour_radius: None,
             selector_filter: None,
         }

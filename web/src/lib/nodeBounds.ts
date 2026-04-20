@@ -145,6 +145,8 @@ export function getNodePreviewBounds(
   nodesById: Record<string, CanvasNode>,
   parentMatrix = identityMatrix(),
 ): Bounds | null {
+  if (!node.visible) return null
+
   const matrix = multiplyMatrices(parentMatrix, nodeMatrix(node))
 
   if (node.type === 'group') {

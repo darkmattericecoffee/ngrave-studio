@@ -10,6 +10,7 @@ export {
 } from "./parse-gcode";
 
 export {
+  advanceProgramDistance,
   clipSegmentToDistance,
   splitSegmentAtDistance,
 } from "./playback-segment";

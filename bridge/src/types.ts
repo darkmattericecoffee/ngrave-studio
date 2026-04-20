@@ -1,6 +1,16 @@
 export type ToolShape = "Flat" | "Ball" | "V";
 export type FillMode = "Pocket" | "Contour";
 export type EngraveType = "outline" | "pocket" | "raster" | "skeleton";
+export type PathAnchor =
+  | "TopLeft"
+  | "TopCenter"
+  | "TopRight"
+  | "MiddleLeft"
+  | "Center"
+  | "MiddleRight"
+  | "BottomLeft"
+  | "BottomCenter"
+  | "BottomRight";
 
 export interface Settings {
   conversion: {
@@ -10,6 +20,7 @@ export interface Settings {
     origin: [number | null, number | null];
     extra_attribute_name: string | null;
     optimize_path_order: boolean;
+    anchor: PathAnchor;
     /** Radius (mm) for the post-TSP cluster-detour pass; null disables. */
     cluster_detour_radius: number | null;
     selector_filter: string | null;

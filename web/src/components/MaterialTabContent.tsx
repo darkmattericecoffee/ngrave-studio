@@ -1,9 +1,20 @@
-import { useState } from 'react'
+import { useState, type SVGProps } from 'react'
 import { Button, Label, Slider } from '@heroui/react'
+import {
+  ArrowDown,
+  ArrowDownLeft,
+  ArrowDownRight,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUp,
+  ArrowUpLeft,
+  ArrowUpRight,
+  Diamond,
+} from '@gravity-ui/icons'
 
 import { resolveEffectiveMaxStepdown } from '../lib/bridgeSettingsAdapter'
 import { useEditorStore } from '../store'
-import type { MachiningSettings, RouterBitShape } from '../types/editor'
+import type { MachiningSettings, PathAnchor, RouterBitShape } from '../types/editor'
 import { MATERIAL_PRESETS } from '../lib/materialPresets'
 import type { MaterialPreset } from '../lib/materialPresets'
 import flatRouterBitImg from '../assets/router_bits/flat_router_bit.png'
@@ -22,6 +33,21 @@ function defaultStepover(shape: RouterBitShape, diameter: number): number {
 
 const DEFAULT_CUT_FEEDRATE = 300
 const DEFAULT_PLUNGE_FEEDRATE = 120
+const PATH_ANCHORS: Array<{
+  value: PathAnchor
+  name: string
+  icon: (props: SVGProps<SVGSVGElement>) => React.JSX.Element
+}> = [
+  { value: 'TopLeft', name: 'Top left', icon: ArrowUpLeft },
+  { value: 'TopCenter', name: 'Top center', icon: ArrowUp },
+  { value: 'TopRight', name: 'Top right', icon: ArrowUpRight },
+  { value: 'MiddleLeft', name: 'Middle left', icon: ArrowLeft },
+  { value: 'Center', name: 'Center', icon: Diamond },
+  { value: 'MiddleRight', name: 'Middle right', icon: ArrowRight },
+  { value: 'BottomLeft', name: 'Bottom left', icon: ArrowDownLeft },
+  { value: 'BottomCenter', name: 'Bottom center', icon: ArrowDown },
+  { value: 'BottomRight', name: 'Bottom right', icon: ArrowDownRight },
+]
 
 function round2(value: number): number {
   return Math.round(value * 100) / 100
@@ -37,6 +63,7 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
   const setArtboardSize = useEditorStore((s) => s.setArtboardSize)
   const machiningSettings = useEditorStore((s) => s.machiningSettings)
   const setMachiningSettings = useEditorStore((s) => s.setMachiningSettings)
+  const setHoveredPathAnchor = useEditorStore((s) => s.setHoveredPathAnchor)
   const nodesById = useEditorStore((s) => s.nodesById)
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [stepoverFlash, setStepoverFlash] = useState(false)
@@ -211,6 +238,19 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
             ? `${depthPerPass ?? maxCutDepth} mm per pass across ${maxCutDepth} mm.`
             : `${estimatedPassCount} pass${estimatedPassCount === 1 ? '' : 'es'} across ${maxCutDepth} mm.`}
         </div>
+      </section>
+
+      {/* Work anchor */}
+      <section className="space-y-3">
+        <SectionHeading title="Work anchor" />
+        <PathAnchorPicker
+          value={machiningSettings.pathAnchor}
+          onChange={(pathAnchor) => setField({ pathAnchor })}
+          onPreview={setHoveredPathAnchor}
+        />
+        <p className="text-xs text-muted-foreground">
+          This point in the generated cut bounds becomes machine 0,0. Bottom left keeps today&apos;s output.
+        </p>
       </section>
 
       {/* Feed speed */}
@@ -489,6 +529,53 @@ export function PreviewTabContent() {
           </label>
         </div>
       </section>
+    </div>
+  )
+}
+
+function PathAnchorPicker({
+  value,
+  onChange,
+  onPreview,
+}: {
+  value: PathAnchor
+  onChange: (value: PathAnchor) => void
+  onPreview: (value: PathAnchor | null) => void
+}) {
+  const active = PATH_ANCHORS.find((anchor) => anchor.value === value)
+
+  return (
+    <div className="space-y-2">
+      <div className="grid w-40 grid-cols-3 gap-1">
+        {PATH_ANCHORS.map((anchor) => {
+          const selected = anchor.value === value
+          const Icon = anchor.icon
+          return (
+            <button
+              key={anchor.value}
+              type="button"
+              className={`flex h-10 items-center justify-center rounded-md border text-xs font-semibold transition-colors ${
+                selected
+                  ? 'border-primary bg-primary text-primary-foreground'
+                  : 'border-border bg-content1 text-foreground hover:bg-content2'
+              }`}
+              title={anchor.name}
+              aria-label={`Use ${anchor.name} as work anchor`}
+              aria-pressed={selected}
+              onMouseEnter={() => onPreview(anchor.value)}
+              onMouseLeave={() => onPreview(null)}
+              onFocus={() => onPreview(anchor.value)}
+              onBlur={() => onPreview(null)}
+              onClick={() => onChange(anchor.value)}
+            >
+              <Icon className="h-4 w-4" aria-hidden />
+            </button>
+          )
+        })}
+      </div>
+      <div className="text-xs text-foreground">
+        {active?.name ?? 'Bottom left'}
+      </div>
     </div>
   )
 }

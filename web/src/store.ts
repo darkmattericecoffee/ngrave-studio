@@ -20,6 +20,7 @@ import type {
   InteractionMode,
   MachiningSettings,
   MarqueeRect,
+  PathAnchor,
   PendingSvgImport,
   RenderHint,
   ViewportState,
@@ -71,9 +72,11 @@ export interface EditorStore {
   }
   nodeVersion: number
   hoveredId: string | null
+  hoveredPathAnchor: PathAnchor | null
   eyedropperMode: EyedropperMode
   eyedropperSourceNodeId: string | null
   setHoveredId: (id: string | null) => void
+  setHoveredPathAnchor: (anchor: PathAnchor | null) => void
   setEyedropperMode: (mode: EyedropperMode) => void
   applyEyedropperPick: (clickedNodeId: string) => void
   setInteractionMode: (mode: InteractionMode) => void
@@ -608,6 +611,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     tabHeight: 1.5,
     tabSpacing: 50,
     optimizePathOrder: true,
+    pathAnchor: 'BottomLeft',
     clusterDetourRadius: 5,
     circularInterpolation: true,
     cutOrderStrategy: 'ltr',
@@ -623,10 +627,12 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   },
   nodeVersion: 0,
   hoveredId: null,
+  hoveredPathAnchor: null,
   eyedropperMode: 'off',
   eyedropperSourceNodeId: null,
   leftPanelTab: 'layers',
   setHoveredId: (id) => set({ hoveredId: id }),
+  setHoveredPathAnchor: (anchor) => set({ hoveredPathAnchor: anchor }),
   setEyedropperMode: (mode) => set({
     eyedropperMode: mode,
     eyedropperSourceNodeId: null,

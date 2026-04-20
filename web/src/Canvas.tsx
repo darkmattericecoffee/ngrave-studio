@@ -19,6 +19,7 @@ import {
 } from './lib/editorTree'
 import { resizeGeneratorToBounds, supportsGeneratorResizeBack } from './lib/generators'
 import { getNodeSize } from './lib/nodeDimensions'
+import { getNodePreviewBounds, type Bounds } from './lib/nodeBounds'
 import { getBoundsForNodes, getGuides, getLineGuideStops } from './lib/objectSnapping'
 import { getNodeTransformPatch } from './lib/transformUtils'
 import { generateCenterlineForNode } from './lib/centerline'
@@ -28,7 +29,7 @@ import { EditorContextMenu } from './components/EditorContextMenu'
 import { useCanvasState } from './hooks/useCanvasState'
 import { useSelection } from './hooks/useSelection'
 import { useEditorStore } from './store'
-import type { CanvasNode, CircleNode, GroupNode, LineNode, PathNode, RectNode, MarqueeRect, ViewportState } from './types/editor'
+import type { CanvasNode, CircleNode, GroupNode, LineNode, PathAnchor, PathNode, RectNode, MarqueeRect, ViewportState } from './types/editor'
 
 interface Point {
   x: number
@@ -62,6 +63,80 @@ const EYEDROPPER_PICK_FLASH_MS = 140
 const IMPORT_FOCUS_PADDING_PX = 96
 
 type NodeLiveTransform = { x: number; y: number; rotation: number; scaleX: number; scaleY: number }
+
+function mergeBounds(a: Bounds | null, b: Bounds | null): Bounds | null {
+  if (!a) return b
+  if (!b) return a
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  }
+}
+
+function translateBounds(bounds: Bounds, dx: number, dy: number): Bounds {
+  return {
+    minX: bounds.minX + dx,
+    minY: bounds.minY + dy,
+    maxX: bounds.maxX + dx,
+    maxY: bounds.maxY + dy,
+  }
+}
+
+function getVisibleCutBounds(
+  rootIds: string[],
+  nodesById: Record<string, CanvasNode>,
+): Bounds | null {
+  let bounds: Bounds | null = null
+
+  for (const rootId of rootIds) {
+    const node = nodesById[rootId]
+    if (!node || !node.visible) continue
+
+    const baseBounds = getNodePreviewBounds(node, nodesById)
+    if (!baseBounds) continue
+
+    const grid = node.gridMetadata
+    if (!grid || grid.rows * grid.cols <= 1) {
+      bounds = mergeBounds(bounds, baseBounds)
+      continue
+    }
+
+    const size = getNodeSize(node, nodesById)
+    for (let r = 0; r < grid.rows; r++) {
+      for (let c = 0; c < grid.cols; c++) {
+        bounds = mergeBounds(
+          bounds,
+          translateBounds(
+            baseBounds,
+            c * (size.width + grid.colGap),
+            r * (size.height + grid.rowGap),
+          ),
+        )
+      }
+    }
+  }
+
+  return bounds
+}
+
+function anchorPointFromCanvasBounds(anchor: PathAnchor, bounds: Bounds): Point {
+  const midX = (bounds.minX + bounds.maxX) / 2
+  const midY = (bounds.minY + bounds.maxY) / 2
+  const x = anchor === 'TopLeft' || anchor === 'MiddleLeft' || anchor === 'BottomLeft'
+    ? bounds.minX
+    : anchor === 'TopRight' || anchor === 'MiddleRight' || anchor === 'BottomRight'
+      ? bounds.maxX
+      : midX
+  const y = anchor === 'TopLeft' || anchor === 'TopCenter' || anchor === 'TopRight'
+    ? bounds.minY
+    : anchor === 'BottomLeft' || anchor === 'BottomCenter' || anchor === 'BottomRight'
+      ? bounds.maxY
+      : midY
+
+  return { x, y }
+}
 
 function getEffectiveTransform(node: CanvasNode, live: Map<string, NodeLiveTransform>): NodeLiveTransform {
   return live.get(node.id) ?? { x: node.x, y: node.y, rotation: node.rotation ?? 0, scaleX: node.scaleX ?? 1, scaleY: node.scaleY ?? 1 }
@@ -1439,6 +1514,18 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   })()
 
   const panelHoveredId = useEditorStore((s) => s.hoveredId)
+  const hoveredPathAnchor = useEditorStore((s) => s.hoveredPathAnchor)
+  const hoveredPathAnchorPreview = useMemo(() => {
+    if (!hoveredPathAnchor) return null
+
+    const bounds = getVisibleCutBounds(rootIds, nodesById)
+    if (!bounds) return null
+
+    return {
+      bounds,
+      point: anchorPointFromCanvasBounds(hoveredPathAnchor, bounds),
+    }
+  }, [hoveredPathAnchor, nodesById, rootIds])
   const outlineSourceIds = useMemo(
     () => [
       ...new Set([
@@ -1865,6 +1952,47 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
               })}
 
             {centerlineOverlayNodes}
+
+            {hoveredPathAnchorPreview ? (() => {
+              const { bounds, point } = hoveredPathAnchorPreview
+              const markerRadius = 5 / viewport.scale
+              const arm = 11 / viewport.scale
+              const strokeWidth = 1.4 / viewport.scale
+              return (
+                <Group key="path-anchor-preview" listening={false}>
+                  <Rect
+                    x={bounds.minX}
+                    y={bounds.minY}
+                    width={bounds.maxX - bounds.minX}
+                    height={bounds.maxY - bounds.minY}
+                    stroke="#0d99ff"
+                    strokeWidth={0.9 / viewport.scale}
+                    dash={[5 / viewport.scale, 4 / viewport.scale]}
+                    fill="rgba(13,153,255,0.04)"
+                  />
+                  <Line
+                    points={[point.x - arm, point.y, point.x + arm, point.y]}
+                    stroke="#00d5ff"
+                    strokeWidth={strokeWidth}
+                    lineCap="round"
+                  />
+                  <Line
+                    points={[point.x, point.y - arm, point.x, point.y + arm]}
+                    stroke="#00d5ff"
+                    strokeWidth={strokeWidth}
+                    lineCap="round"
+                  />
+                  <Circle
+                    x={point.x}
+                    y={point.y}
+                    radius={markerRadius}
+                    fill="rgba(0,213,255,0.22)"
+                    stroke="#ffffff"
+                    strokeWidth={1.1 / viewport.scale}
+                  />
+                </Group>
+              )
+            })() : null}
 
             {/* Grid gap handles for selected grid nodes */}
             {selectedIds.map((nodeId) => {

@@ -57,7 +57,12 @@ impl Stylesheet {
         // Split on `{` and `}` to extract selector/declaration pairs
         let mut rest = stripped.as_str();
         while let Some(open) = rest.find('{') {
-            let selector_text = rest[..open].trim();
+            let selector_prefix = rest[..open].trim();
+            let selector_text = selector_prefix
+                .rsplit(';')
+                .next()
+                .unwrap_or(selector_prefix)
+                .trim();
             rest = &rest[open + 1..];
 
             let Some(close) = rest.find('}') else {
@@ -166,7 +171,10 @@ mod tests {
         let sheet = Stylesheet::parse_css(".st0 { fill: none; stroke: #1d1d1b; }");
         assert_eq!(sheet.rules.len(), 1);
         assert_eq!(sheet.rules[0].declarations.len(), 2);
-        assert_eq!(sheet.rules[0].declarations[0], ("fill".into(), "none".into()));
+        assert_eq!(
+            sheet.rules[0].declarations[0],
+            ("fill".into(), "none".into())
+        );
         assert_eq!(
             sheet.rules[0].declarations[1],
             ("stroke".into(), "#1d1d1b".into())
@@ -290,9 +298,6 @@ mod tests {
 
         assert_eq!(sheet.get_property(path, "fill"), Some("none"));
         assert_eq!(sheet.get_property(path, "stroke"), Some("#1d1d1b"));
-        assert_eq!(
-            sheet.get_property(path, "stroke-miterlimit"),
-            Some("10")
-        );
+        assert_eq!(sheet.get_property(path, "stroke-miterlimit"), Some("10"));
     }
 }

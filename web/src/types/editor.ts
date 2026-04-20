@@ -14,6 +14,16 @@ export interface ArtboardState {
 }
 
 export type RouterBitShape = 'Flat' | 'Ball' | 'V'
+export type PathAnchor =
+  | 'TopLeft'
+  | 'TopCenter'
+  | 'TopRight'
+  | 'MiddleLeft'
+  | 'Center'
+  | 'MiddleRight'
+  | 'BottomLeft'
+  | 'BottomCenter'
+  | 'BottomRight'
 
 export interface MachiningSettings {
   toolDiameter: number
@@ -36,6 +46,8 @@ export interface MachiningSettings {
   tabSpacing: number
   /** Reorder strokes via TSP to minimize pen-up travel. */
   optimizePathOrder: boolean
+  /** Work anchor over the generated cut-geometry bounds. Firmware applies the offset. */
+  pathAnchor: PathAnchor
   /** If set (mm), splices short strokes mid-way into nearby longer strokes
    *  after TSP — minimizes drift on handheld / uncalibrated CNCs. */
   clusterDetourRadius: number | null

@@ -43,6 +43,7 @@ export function buildBridgeSettings(
       // resolution and look visually smooth on any viewer.
       tolerance: 0.01,
       optimize_path_order: machining.optimizePathOrder,
+      anchor: machining.pathAnchor,
       cluster_detour_radius:
         machining.clusterDetourRadius != null && machining.clusterDetourRadius > 0
           ? machining.clusterDetourRadius

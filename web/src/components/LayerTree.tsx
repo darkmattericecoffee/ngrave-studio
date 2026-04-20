@@ -427,6 +427,27 @@ export function LayerTree() {
     setDragAnchorId(id)
   }
 
+  function handleCutOrderRowSelect(id: string, e: React.MouseEvent) {
+    if (e.button !== 0) return
+
+    if (e.shiftKey && lastClickedId !== null) {
+      const orderIds = cutOrder.sequence.map((leaf) => leaf.nodeId)
+      const a = orderIds.indexOf(lastClickedId)
+      const b = orderIds.indexOf(id)
+      if (a >= 0 && b >= 0) {
+        selectMany(orderIds.slice(Math.min(a, b), Math.max(a, b) + 1))
+      }
+      return
+    }
+
+    if (e.metaKey || e.ctrlKey) {
+      toggleSelection(id)
+    } else {
+      selectOne(id)
+    }
+    setLastClickedId(id)
+  }
+
   function handleRowContextMenu(id: string, e: React.MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
@@ -541,23 +562,20 @@ export function LayerTree() {
               onChange={(e) =>
                 setMachiningSettings({
                   cutOrderStrategy: e.target.value as MachiningSettings['cutOrderStrategy'],
+                  ...(e.target.value !== 'manual' ? { manualCutOrder: null } : {}),
                 })
               }
             >
               <option value="svg">SVG order</option>
               <option value="ltr">Left → Right</option>
               <option value="btt">Bottom → Top</option>
-              <option value="manual">Manual</option>
+              {cutOrderStrategy === 'manual' && <option value="manual">Custom</option>}
             </select>
           </label>
           {cutOrderStrategy === 'manual' && (
-            <button
-              type="button"
-              className="mt-2 text-[11px] text-muted-foreground underline hover:text-foreground"
-              onClick={() => setMachiningSettings({ manualCutOrder: null, cutOrderStrategy: 'ltr' })}
-            >
-              Reset manual order
-            </button>
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Dragging made this a custom order. Pick a preset to rebuild it.
+            </p>
           )}
         </div>
       ) : (
@@ -596,7 +614,7 @@ export function LayerTree() {
           nodesById={nodesById}
           selectedIds={selectedIds}
           defaultDepth={defaultDepth}
-          onSelect={(id, e) => handleRowMouseDown(id, e)}
+          onSelect={(id, e) => handleCutOrderRowSelect(id, e)}
           onHover={handleRowMouseEnter}
           onHoverLeave={handleRowMouseLeave}
           onContextMenu={handleRowContextMenu}

@@ -18,8 +18,8 @@ mod tsp;
 mod turtle;
 
 pub use converter::{
-    ConversionConfig, ConversionOptions, svg2preview, svg2program, svg2program_engraving,
-    svg2program_engraving_multi, svg2program_engraving_multi_with_progress,
+    ConversionConfig, ConversionOptions, PathAnchor, svg2preview, svg2program,
+    svg2program_engraving, svg2program_engraving_multi, svg2program_engraving_multi_with_progress,
 };
 pub use engraving::{EngravingConfig, EngravingOperation, FillMode, GenerationWarning, ToolShape};
 pub use machine::{Machine, MachineConfig, SupportedFunctionality};
@@ -158,7 +158,14 @@ mod test {
         input: &str,
         engraving: EngravingConfig,
     ) -> (Vec<Token<'static>>, Vec<GenerationWarning>) {
-        let config = ConversionConfig::default();
+        get_engraving_actual_with_config(input, ConversionConfig::default(), engraving)
+    }
+
+    fn get_engraving_actual_with_config(
+        input: &str,
+        config: ConversionConfig,
+        engraving: EngravingConfig,
+    ) -> (Vec<Token<'static>>, Vec<GenerationWarning>) {
         let document = roxmltree::Document::parse_with_options(
             input,
             ParsingOptions {
@@ -603,8 +610,8 @@ mod test {
         assert_eq!(warnings, vec![]);
         assert_eq!(code.matches("G1 Z-1 F120").count(), 2, "{code}");
         assert_eq!(code.matches("G1 Z-2 F120").count(), 2, "{code}");
-        assert!(!code.contains("\nG2"), "{code}");
-        assert!(!code.contains("\nG3"), "{code}");
+        assert!(!code.contains("\nG2 "), "{code}");
+        assert!(!code.contains("\nG3 "), "{code}");
     }
 
     #[test]
@@ -717,7 +724,7 @@ mod test {
         );
         let code = format_tokens(&program);
 
-        assert_eq!(warnings, vec![]);
+        assert_eq!(warnings, vec![GenerationWarning::MaterialBoundsExceeded]);
         assert_eq!(code.matches("G1 Z-1 F120").count(), 1, "{code}");
         assert_eq!(code.matches("G1 Z-2 F120").count(), 1, "{code}");
         assert_eq!(code.matches("\nG0 X").count(), 2, "{code}");
@@ -823,8 +830,43 @@ mod test {
         assert_eq!(warnings, vec![]);
         assert_eq!(code.matches("G1 Z-1 F120").count(), 1, "{code}");
         assert_eq!(code.matches("G1 Z-2 F120").count(), 1, "{code}");
-        assert_eq!(code.matches("Y5 F300").count(), 2, "{code}");
-        assert!(code.contains("G0 X1 Y5"), "{code}");
+        assert_eq!(code.matches("Y0 F300").count(), 2, "{code}");
+        assert!(code.contains("G0 X0 Y0"), "{code}");
+    }
+
+    #[test]
+    fn engraving_anchor_center_shifts_generated_coordinates() {
+        let svg = r#"
+            <svg xmlns="http://www.w3.org/2000/svg" width="20mm" height="10mm" viewBox="0 0 20 10">
+                <path d="M2 5 L18 5" fill="none" stroke="black" />
+            </svg>
+        "#;
+        let (program, warnings) = get_engraving_actual_with_config(
+            svg,
+            ConversionConfig {
+                anchor: PathAnchor::Center,
+                ..ConversionConfig::default()
+            },
+            EngravingConfig {
+                enabled: true,
+                material_width: 30.0,
+                material_height: 20.0,
+                tool_diameter: 2.0,
+                target_depth: 1.0,
+                max_stepdown: 1.0,
+                ..EngravingConfig::default()
+            },
+        );
+        let code = format_tokens(&program);
+
+        assert_eq!(warnings, vec![]);
+        assert!(
+            code.contains("; BOUNDS: X -8.000 8.000, Y 0.000 0.000"),
+            "{code}"
+        );
+        assert!(code.contains("; ANCHOR: Center"), "{code}");
+        assert!(code.contains("G0 X-8"), "{code}");
+        assert!(code.contains("G1 X8"), "{code}");
     }
 
     #[test]
@@ -853,7 +895,7 @@ mod test {
         let code = format_tokens(&program);
 
         assert_eq!(warnings, vec![]);
-        assert!(code.contains("G1 X22 Y20 F300"), "{code}");
+        assert!(code.contains("G1 X20 Y0 F300"), "{code}");
     }
 
     #[test]
@@ -879,7 +921,7 @@ mod test {
         );
         let offset_code = format_tokens(&offset_program);
         assert_eq!(offset_warnings, vec![]);
-        assert!(offset_code.contains("G0 X3 Y4"), "{offset_code}");
+        assert!(offset_code.contains("G0 X0 Y0"), "{offset_code}");
 
         let (_program, warnings) = get_engraving_actual(
             svg,
@@ -995,19 +1037,25 @@ mod test {
         assert_eq!(warnings, vec![]);
         assert_eq!(code.matches("G21").count(), 1, "{code}");
         assert_eq!(code.matches("G17").count(), 1, "{code}");
-        assert_eq!(code.matches("operation:start:left-op:Left").count(), 1, "{code}");
-        assert_eq!(code.matches("operation:start:right-op:Right").count(), 2, "{code}");
+        assert_eq!(
+            code.matches("operation:start:left-op:Left").count(),
+            1,
+            "{code}"
+        );
+        assert_eq!(
+            code.matches("operation:start:right-op:Right").count(),
+            1,
+            "{code}"
+        );
         assert_eq!(z1_positions.len(), 2, "{code}");
-        assert_eq!(right_start_positions.len(), 2, "{code}");
-        assert_eq!(right_end_positions.len(), 2, "{code}");
+        assert_eq!(right_start_positions.len(), 1, "{code}");
+        assert_eq!(right_end_positions.len(), 1, "{code}");
         assert!(left_start < z1_positions[0], "{code}");
         assert!(z1_positions[0] < left_end, "{code}");
         assert!(left_end < right_start_positions[0], "{code}");
         assert!(right_start_positions[0] < z1_positions[1], "{code}");
-        assert!(z1_positions[1] < right_end_positions[0], "{code}");
-        assert!(right_end_positions[0] < right_start_positions[1], "{code}");
-        assert!(right_start_positions[1] < z2, "{code}");
-        assert!(z2 < right_end_positions[1], "{code}");
+        assert!(z1_positions[1] < z2, "{code}");
+        assert!(z2 < right_end_positions[0], "{code}");
     }
 
     #[test]
