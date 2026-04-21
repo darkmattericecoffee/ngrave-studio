@@ -5,13 +5,13 @@ import { Pin } from 'lucide-react'
 
 import { AppIcon, Icons } from '../lib/icons'
 import { depthToColor } from '../lib/cncVisuals'
-import { computeCutOrder } from '../lib/cutOrder'
 import {
   assignLeafIdsToJob,
-  computeJobs,
+  computeCutPlan,
   manualJobsFromComputed,
   moveLeafToJob,
   normalizeManualJobs,
+  reorderManualJobs,
   splitManualJobsAtCutIndex,
 } from '../lib/jobs'
 import {
@@ -24,7 +24,7 @@ import { boundsToViewBox, getNodePreviewBounds } from '../lib/nodeBounds'
 import { useEditorStore } from '../store'
 import { CutOrderView } from './CutOrderView'
 import { EditorContextMenu } from './EditorContextMenu'
-import type { CanvasNode, CncMetadata, GroupNode, LineNode, MachiningSettings } from '../types/editor'
+import type { CanvasNode, CncMetadata, GroupNode, LineNode } from '../types/editor'
 
 function cn(...classes: (string | boolean | undefined | null)[]) {
   return classes.filter(Boolean).join(' ')
@@ -323,17 +323,13 @@ export function LayerTree() {
     [rootIds, nodesById, collapsed, query],
   )
 
-  const cutOrder = useMemo(
-    () => computeCutOrder(rootIds, nodesById, cutOrderStrategy, manualCutOrder),
-    [rootIds, nodesById, cutOrderStrategy, manualCutOrder],
+  const cutPlan = useMemo(
+    () => computeCutPlan(rootIds, nodesById, machiningSettings, artboard),
+    [rootIds, nodesById, machiningSettings, artboard],
   )
-
-  const computedJobResult = useMemo(
-    () => computeJobs(cutOrder, nodesById, machiningSettings, artboard),
-    [cutOrder, nodesById, machiningSettings, artboard],
-  )
-  const displayedJobs = jobsEnabled ? computedJobResult.jobs : []
-  const manualJobSeed = manualJobs ?? manualJobsFromComputed(computedJobResult.jobs)
+  const cutOrder = cutPlan.cutOrder
+  const displayedJobs = jobsEnabled ? cutPlan.jobs : []
+  const manualJobSeed = manualJobs ?? manualJobsFromComputed(cutPlan.jobs)
 
   /** Expand a selection of any node IDs into their descendant leaf IDs present
    *  in the current cut order — job membership only tracks leaves. */
@@ -408,6 +404,25 @@ export function LayerTree() {
     setSelectedJob(targetJobId)
   }
 
+  const handleRenameJob = (jobId: string, name: string) => {
+    if (!jobsEnabled) return
+    const seed = manualJobs ?? manualJobSeed
+    const next = seed.map((job) => (job.id === jobId ? { ...job, name } : job))
+    pushHistory()
+    commitManualJobs(next)
+  }
+
+  const handleReorderJobs = (nextJobIds: string[]) => {
+    if (!jobsEnabled) return
+    const result = reorderManualJobs(cutOrder, manualJobSeed, nextJobIds)
+    pushHistory()
+    setMachiningSettings({
+      cutOrderStrategy: 'manual',
+      manualCutOrder: result.manualCutOrder,
+      manualJobs: result.manualJobs,
+    })
+  }
+
   useEffect(() => {
     const onMouseUp = () => setIsDragging(false)
     window.addEventListener('mouseup', onMouseUp)
@@ -419,15 +434,16 @@ export function LayerTree() {
     if (e.button !== 0) return
     e.preventDefault() // prevent text selection during drag
 
-    if (e.shiftKey && lastClickedId !== null) {
+    if (e.shiftKey && lastClickedId !== null && lastClickedId !== id) {
       const a = flatList.indexOf(lastClickedId)
       const b = flatList.indexOf(id)
       if (a >= 0 && b >= 0) {
         selectMany(flatList.slice(Math.min(a, b), Math.max(a, b) + 1))
+        setLastClickedId(id)
+        return
       }
-      return
     }
-    if (e.metaKey || e.ctrlKey) {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
       toggleSelection(id)
     } else {
       selectOne(id)
@@ -440,17 +456,18 @@ export function LayerTree() {
   function handleCutOrderRowSelect(id: string, e: React.MouseEvent) {
     if (e.button !== 0) return
 
-    if (e.shiftKey && lastClickedId !== null) {
+    if (e.shiftKey && lastClickedId !== null && lastClickedId !== id) {
       const orderIds = cutOrder.sequence.map((leaf) => leaf.nodeId)
       const a = orderIds.indexOf(lastClickedId)
       const b = orderIds.indexOf(id)
       if (a >= 0 && b >= 0) {
         selectMany(orderIds.slice(Math.min(a, b), Math.max(a, b) + 1))
+        setLastClickedId(id)
+        return
       }
-      return
     }
 
-    if (e.metaKey || e.ctrlKey) {
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
       toggleSelection(id)
     } else {
       selectOne(id)
@@ -573,27 +590,36 @@ export function LayerTree() {
       </div>
       {view === 'cutOrder' ? (
         <div className="border-b border-border px-4 py-3">
-          <label className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>Group ordering</span>
-            <select
-              className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground"
-              value={cutOrderStrategy}
-              onChange={(e) =>
-                setMachiningSettings({
-                  cutOrderStrategy: e.target.value as MachiningSettings['cutOrderStrategy'],
-                  ...(e.target.value !== 'manual' ? { manualCutOrder: null } : {}),
-                })
-              }
-            >
-              <option value="svg">SVG order</option>
-              <option value="ltr">Left → Right</option>
-              <option value="btt">Bottom → Top</option>
-              {cutOrderStrategy === 'manual' && <option value="manual">Custom</option>}
-            </select>
-          </label>
-          {cutOrderStrategy === 'manual' && (
+          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+            <span className="flex items-center gap-2">
+              <span>Cut order</span>
+              <span className="rounded bg-[var(--surface-secondary)] px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground">
+                {cutOrderStrategy === 'manual' ? 'Custom' : 'Auto'}
+              </span>
+            </span>
+            {cutOrderStrategy === 'manual' && (
+              <button
+                type="button"
+                className="rounded border border-border bg-background px-2 py-1 text-xs text-foreground hover:bg-[var(--surface-secondary)]"
+                onClick={() =>
+                  setMachiningSettings({
+                    cutOrderStrategy: 'auto',
+                    manualCutOrder: null,
+                    manualJobs: null,
+                  })
+                }
+              >
+                Reset
+              </button>
+            )}
+          </div>
+          {cutOrderStrategy === 'manual' ? (
             <p className="mt-2 text-[11px] text-muted-foreground">
-              Dragging made this a custom order. Pick a preset to rebuild it.
+              You’ve customised the order. Reset to let the planner rebuild it.
+            </p>
+          ) : (
+            <p className="mt-2 text-[11px] text-muted-foreground">
+              Shapes are clustered spatially; large encompassing shapes are cut last.
             </p>
           )}
           {jobsEnabled && selectedLeafIdsForJobs.length > 0 && (
@@ -696,6 +722,9 @@ export function LayerTree() {
           onStartJobAt={startJobAt}
           onMoveToJob={handleMoveToJob}
           onReorder={handleCutOrderReorder}
+          onRenameJob={jobsEnabled ? handleRenameJob : undefined}
+          onReorderJobs={jobsEnabled ? handleReorderJobs : undefined}
+          onJobDragStart={jobsEnabled ? () => selectMany([]) : undefined}
         />
       ) : (
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">

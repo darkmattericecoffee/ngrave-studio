@@ -110,6 +110,7 @@ export interface EditorStore {
     patch: Partial<CanvasNode>,
   ) => void
   updateCncMetadata: (nodeId: string, patch: Partial<CncMetadata>) => void
+  updateCncMetadataMany: (nodeIds: string[], patch: Partial<CncMetadata>) => void
   pushHistory: () => void
   undo: () => void
   redo: () => void
@@ -636,10 +637,9 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     pathAnchor: 'BottomLeft',
     clusterDetourRadius: 5,
     circularInterpolation: true,
-    cutOrderStrategy: 'ltr',
+    cutOrderStrategy: 'auto',
     manualCutOrder: null,
     jobsEnabled: true,
-    jobClusterRadius: null,
     manualJobs: null,
   },
   viewport: initialViewport,
@@ -804,6 +804,24 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
           } as CanvasNode,
         },
       }
+    })
+  },
+  updateCncMetadataMany: (nodeIds, patch) => {
+    if (nodeIds.length === 0) return
+    get().pushHistory()
+    set((state) => {
+      const nextNodes = { ...state.nodesById }
+      let changed = false
+      for (const id of nodeIds) {
+        const existing = nextNodes[id]
+        if (!existing) continue
+        nextNodes[id] = {
+          ...existing,
+          cncMetadata: { ...existing.cncMetadata, ...patch },
+        } as CanvasNode
+        changed = true
+      }
+      return changed ? { nodesById: nextNodes } : {}
     })
   },
   pushHistory: () => {

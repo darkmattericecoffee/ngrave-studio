@@ -113,8 +113,15 @@ function sanitizeMachiningSettings(value: unknown): Partial<MachiningSettings> |
   if (isNumber(value.tabSpacing) && value.tabSpacing > 0) next.tabSpacing = value.tabSpacing
   if (isBoolean(value.optimizePathOrder)) next.optimizePathOrder = value.optimizePathOrder
   if (isPathAnchor(value.pathAnchor)) next.pathAnchor = value.pathAnchor
-  if (value.cutOrderStrategy === 'svg' || value.cutOrderStrategy === 'ltr' || value.cutOrderStrategy === 'btt' || value.cutOrderStrategy === 'manual') {
+  if (value.cutOrderStrategy === 'auto' || value.cutOrderStrategy === 'manual') {
     next.cutOrderStrategy = value.cutOrderStrategy
+  } else if (
+    value.cutOrderStrategy === 'svg' ||
+    value.cutOrderStrategy === 'ltr' ||
+    value.cutOrderStrategy === 'btt'
+  ) {
+    // Legacy strategies folded into the magic planner — old projects open as auto.
+    next.cutOrderStrategy = 'auto'
   }
   if (Array.isArray(value.manualCutOrder) && value.manualCutOrder.every((id) => typeof id === 'string')) {
     next.manualCutOrder = value.manualCutOrder

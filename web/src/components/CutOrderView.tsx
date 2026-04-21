@@ -9,6 +9,22 @@ function cn(...classes: (string | boolean | undefined | null)[]) {
   return classes.filter(Boolean).join(' ')
 }
 
+/** Left-handle icon — filled rounded rectangle with a 3×2 grid of dots.
+ *  Signals "grab the whole block" vs. the right-side ⋮⋮ "grab the marker". */
+function GroupDragHandleIcon() {
+  return (
+    <svg viewBox="0 0 16 12" width="14" height="10" aria-hidden="true" focusable="false">
+      <rect x="0.5" y="0.5" width="15" height="11" rx="2" fill="currentColor" opacity="0.55" />
+      <circle cx="4" cy="4" r="1" fill="#111" />
+      <circle cx="8" cy="4" r="1" fill="#111" />
+      <circle cx="12" cy="4" r="1" fill="#111" />
+      <circle cx="4" cy="8" r="1" fill="#111" />
+      <circle cx="8" cy="8" r="1" fill="#111" />
+      <circle cx="12" cy="8" r="1" fill="#111" />
+    </svg>
+  )
+}
+
 export function CutOrderView({
   cutOrder,
   nodesById,
@@ -22,6 +38,9 @@ export function CutOrderView({
   onMoveToJob,
   jobs,
   onStartJobAt,
+  onRenameJob,
+  onReorderJobs,
+  onJobDragStart,
 }: {
   cutOrder: CutOrderResult
   nodesById: Record<string, CanvasNode>
@@ -35,10 +54,18 @@ export function CutOrderView({
   onReorder: (nextOrder: string[]) => void
   onMoveToJob: (nodeId: string, targetJobId: string, targetNodeId: string, before: boolean) => void
   onStartJobAt: (cutIndex: number) => void
+  onRenameJob?: (jobId: string, name: string) => void
+  onReorderJobs?: (nextJobIds: string[]) => void
+  onJobDragStart?: () => void
 }) {
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropBefore, setDropBefore] = useState(true)
+  const [renamingJobId, setRenamingJobId] = useState<string | null>(null)
+  const [jobRenameDraft, setJobRenameDraft] = useState('')
+  const [draggingJobId, setDraggingJobId] = useState<string | null>(null)
+  const [jobDropTargetId, setJobDropTargetId] = useState<string | null>(null)
+  const [hoveredLeftHandleJobId, setHoveredLeftHandleJobId] = useState<string | null>(null)
 
   if (cutOrder.sequence.length === 0) {
     return (
@@ -76,6 +103,27 @@ export function CutOrderView({
     onMoveToJob(draggingId, targetJobId, targetLeaf.nodeId, false)
   }
 
+  function commitJobRename(jobId: string) {
+    const next = jobRenameDraft.trim()
+    setRenamingJobId(null)
+    setJobRenameDraft('')
+    if (!next || !onRenameJob) return
+    onRenameJob(jobId, next)
+  }
+
+  function handleJobHeaderDrop(targetJobId: string) {
+    if (!draggingJobId || !onReorderJobs) return
+    if (draggingJobId === targetJobId) return
+    const order = sections.map((entry) => entry.id)
+    const fromIdx = order.indexOf(draggingJobId)
+    const targetIdx = order.indexOf(targetJobId)
+    if (fromIdx < 0 || targetIdx < 0) return
+    const [moved] = order.splice(fromIdx, 1)
+    const insertIdx = order.indexOf(targetJobId)
+    order.splice(insertIdx, 0, moved)
+    onReorderJobs(order)
+  }
+
   const leafById = new Map(cutOrder.sequence.map((leaf) => [leaf.nodeId, leaf]))
   const assigned = new Set<string>()
   const sections = jobs.length > 0
@@ -97,12 +145,19 @@ export function CutOrderView({
   return (
     <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
       <div className="space-y-3">
-        {sections.map((section, sectionIndex) => (
+        {sections.map((section, sectionIndex) => {
+          const isJobDropTarget = jobDropTargetId === section.id && draggingJobId && draggingJobId !== section.id
+          const isDraggingThisJob = draggingJobId === section.id
+          const canReorderJobs = Boolean(onReorderJobs) && sections.length > 1
+          const isRenaming = renamingJobId === section.id
+          return (
           <div
             key={`${section.id}-${section.leaves[0]?.index ?? 0}`}
             className={cn(
-              'rounded-md transition-colors',
+              'relative rounded-md transition-colors',
               dropTargetId === `section:${section.id}` && 'bg-[var(--surface-secondary)]/40',
+              hoveredLeftHandleJobId === section.id && 'bg-[var(--surface-secondary)]/60',
+              isDraggingThisJob && 'opacity-40',
             )}
             onDragOver={(e) => {
               if (!draggingId) return
@@ -125,9 +180,102 @@ export function CutOrderView({
               setDropTargetId(null)
             }}
           >
-            <div className="group/job mb-1 flex items-center gap-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+            <div
+              className={cn(
+                'group/job relative mb-1 flex items-center gap-2 rounded px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground',
+                isJobDropTarget && 'before:absolute before:inset-x-0 before:-top-0.5 before:h-0.5 before:rounded before:bg-primary',
+              )}
+              onDragOver={(e) => {
+                if (!draggingJobId || draggingJobId === section.id) return
+                e.preventDefault()
+                e.stopPropagation()
+                e.dataTransfer.dropEffect = 'move'
+                setJobDropTargetId(section.id)
+              }}
+              onDragLeave={(e) => {
+                const related = e.relatedTarget as Node | null
+                if (!related || !e.currentTarget.contains(related)) {
+                  if (jobDropTargetId === section.id) setJobDropTargetId(null)
+                }
+              }}
+              onDrop={(e) => {
+                if (!draggingJobId) return
+                e.preventDefault()
+                e.stopPropagation()
+                handleJobHeaderDrop(section.id)
+                setDraggingJobId(null)
+                setJobDropTargetId(null)
+              }}
+            >
+              {canReorderJobs ? (
+                <span
+                  role="button"
+                  tabIndex={-1}
+                  aria-label="Drag to reorder this job"
+                  className="inline-flex h-4 w-5 shrink-0 cursor-grab items-center justify-center rounded text-muted-foreground/70 hover:text-foreground"
+                  draggable={!isRenaming}
+                  title="Drag to reorder this job (moves the whole group)"
+                  onMouseEnter={() => setHoveredLeftHandleJobId(section.id)}
+                  onMouseLeave={() =>
+                    setHoveredLeftHandleJobId((cur) => (cur === section.id ? null : cur))
+                  }
+                  onDragStart={(e) => {
+                    if (isRenaming) return
+                    setDraggingJobId(section.id)
+                    onJobDragStart?.()
+                    e.dataTransfer.effectAllowed = 'move'
+                    e.dataTransfer.setData('application/x-job-id', section.id)
+                  }}
+                  onDragEnd={() => {
+                    setDraggingJobId(null)
+                    setJobDropTargetId(null)
+                    setHoveredLeftHandleJobId(null)
+                  }}
+                >
+                  <GroupDragHandleIcon />
+                </span>
+              ) : null}
               <span className="h-px flex-1 bg-border" />
-              <span>{`Job ${sectionIndex + 1}`}</span>
+              <span className="font-mono text-[10px] tracking-normal text-muted-foreground/80">
+                J{sectionIndex + 1}
+              </span>
+              {isRenaming ? (
+                <input
+                  autoFocus
+                  value={jobRenameDraft}
+                  aria-label="Job name"
+                  className="min-w-0 max-w-[160px] rounded border border-primary/40 bg-background px-1.5 py-0.5 text-[11px] font-medium normal-case tracking-normal text-foreground outline-none ring-1 ring-primary/20"
+                  onChange={(e) => setJobRenameDraft(e.target.value)}
+                  onFocus={(e) => e.target.select()}
+                  onBlur={() => commitJobRename(section.id)}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    e.stopPropagation()
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      commitJobRename(section.id)
+                    } else if (e.key === 'Escape') {
+                      e.preventDefault()
+                      setRenamingJobId(null)
+                      setJobRenameDraft('')
+                    }
+                  }}
+                />
+              ) : (
+                <span
+                  className="truncate cursor-text normal-case tracking-normal text-foreground"
+                  title={onRenameJob ? 'Double-click to rename' : undefined}
+                  onDoubleClick={(e) => {
+                    if (!onRenameJob) return
+                    e.stopPropagation()
+                    setRenamingJobId(section.id)
+                    setJobRenameDraft(section.name)
+                  }}
+                >
+                  {section.name}
+                </span>
+              )}
               <span className="text-[10px] normal-case tracking-normal text-muted-foreground/70">
                 {section.leaves.length} item{section.leaves.length === 1 ? '' : 's'}
               </span>
@@ -240,7 +388,8 @@ export function CutOrderView({
               })}
             </div>
           </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )

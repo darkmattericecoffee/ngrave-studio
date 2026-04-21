@@ -300,23 +300,8 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
           Split into jobs with rezero pauses
         </label>
         <p className="text-xs text-muted-foreground">
-          On handheld CNCs, long travel drifts. Job boundaries pause the machine (M0) so you can realign the router at a pencil cross and rezero.
+          On handheld CNCs, long travel drifts. Job boundaries pause the machine (M0) so you can realign the router at a pencil cross and rezero. The planner clusters shapes spatially and isolates large encompassing shapes as their own job.
         </p>
-        {machiningSettings.jobsEnabled && (
-          <div className="space-y-2">
-            <NumberField
-              label="Cluster radius"
-              unit="mm"
-              value={machiningSettings.jobClusterRadius}
-              onChange={(v) =>
-                setField({ jobClusterRadius: v != null && v > 0 ? v : null })
-              }
-            />
-            <p className="text-xs text-muted-foreground">
-              Leaves whose centroids are within this distance cluster into the same job. Leave blank for an artboard-scaled default.
-            </p>
-          </div>
-        )}
       </section>
 
       {/* Feed speed */}

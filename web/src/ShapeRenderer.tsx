@@ -782,11 +782,9 @@ export const EngravePreviewStack = memo(function EngravePreviewStack({
   onNodeDragEnd,
 }: EngravePreviewStackProps) {
   const nodesById = useEditorStore((state) => state.nodesById)
-  const nodeVersion = useEditorStore((state) => state.nodeVersion)
   const previewPlan = useMemo(
     () => buildDepthPreviewPlan(rootIds, nodesById, defaultDepth, toolDiameter),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- nodeVersion is a stable proxy for nodesById changes
-    [defaultDepth, rootIds, nodeVersion, toolDiameter],
+    [defaultDepth, rootIds, nodesById, toolDiameter],
   )
 
   return (

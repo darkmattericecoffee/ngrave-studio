@@ -99,7 +99,7 @@ export function CutDepthEditor() {
   const nodesById = useEditorStore((s) => s.nodesById)
   const artboard = useEditorStore((s) => s.artboard)
   const defaultDepth = useEditorStore((s) => s.machiningSettings.defaultDepthMm)
-  const updateCncMetadata = useEditorStore((s) => s.updateCncMetadata)
+  const updateCncMetadataMany = useEditorStore((s) => s.updateCncMetadataMany)
   const selectMany = useEditorStore((s) => s.selectMany)
 
   const leafIds = useMemo(
@@ -118,17 +118,15 @@ export function CutDepthEditor() {
   )
 
   const applyAll = (patch: Partial<CncMetadata>) => {
-    leafIds.forEach((id) => updateCncMetadata(id, patch))
+    updateCncMetadataMany(leafIds, patch)
   }
 
   const applyToIds = (ids: string[], patch: Partial<CncMetadata>) => {
-    ids.forEach((id) => updateCncMetadata(id, patch))
+    updateCncMetadataMany(ids, patch)
   }
 
   const clearAll = () => {
-    leafIds.forEach((id) =>
-      updateCncMetadata(id, { cutDepth: undefined, engraveType: undefined }),
-    )
+    updateCncMetadataMany(leafIds, { cutDepth: undefined, engraveType: undefined })
   }
 
   const hasSelection = selectedIds.length > 0

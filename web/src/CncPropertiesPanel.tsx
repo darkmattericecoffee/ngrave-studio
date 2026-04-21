@@ -17,7 +17,7 @@ const ENGRAVE_LABEL: Record<EngraveType, string> = {
 export function CncPropertiesPanel() {
   const selectedIds = useEditorStore((state) => state.selectedIds)
   const nodesById = useEditorStore((state) => state.nodesById)
-  const updateCncMetadata = useEditorStore((state) => state.updateCncMetadata)
+  const updateCncMetadataMany = useEditorStore((state) => state.updateCncMetadataMany)
 
   if (selectedIds.length === 0) {
     return (
@@ -42,15 +42,11 @@ export function CncPropertiesPanel() {
     : ALL_ENGRAVE_TYPES
 
   const applyAll = (patch: Partial<CncMetadata>) => {
-    selectedIds.forEach((id) => {
-      updateCncMetadata(id, patch)
-    })
+    updateCncMetadataMany(selectedIds, patch)
   }
 
   const clearAll = () => {
-    selectedIds.forEach((id) => {
-      updateCncMetadata(id, { cutDepth: undefined, engraveType: undefined })
-    })
+    updateCncMetadataMany(selectedIds, { cutDepth: undefined, engraveType: undefined })
   }
 
   return (

@@ -25,8 +25,8 @@ import { getSubtreeIds, isGroupNode } from "./editorTree"
 import { getNodeSize } from "./nodeDimensions"
 import { exportToSVG } from "./svgExport"
 import { buildBridgeSettings, resolveEffectiveMaxStepdown } from "./bridgeSettingsAdapter"
-import { computeCutOrder, type CutOrderResult } from "./cutOrder"
-import { computeJobs, type ComputedJob } from "./jobs"
+import { type CutOrderResult } from "./cutOrder"
+import { computeCutPlan, type ComputedJob } from "./jobs"
 
 /**
  * Convert the editor's canvas state into bridge ArtObjects for GCode generation.
@@ -49,15 +49,10 @@ export async function editorStateToArtObjects(
   const settings = buildBridgeSettings(baseSettings, artboard, machiningSettings)
   const artObjects: ArtObject[] = []
 
-  const cutOrder = computeCutOrder(
-    rootIds,
-    nodesById,
-    machiningSettings.cutOrderStrategy,
-    machiningSettings.manualCutOrder,
-  )
+  const { cutOrder, jobs } = computeCutPlan(rootIds, nodesById, machiningSettings, artboard)
   const cutOrderLookup = buildCutOrderLookup(cutOrder)
   const jobIdByNodeId = machiningSettings.jobsEnabled
-    ? buildJobLookup(computeJobs(cutOrder, nodesById, machiningSettings, artboard).jobs)
+    ? buildJobLookup(jobs)
     : new Map<string, string>()
 
   for (const rootId of rootIds) {
@@ -192,13 +187,7 @@ export async function prepareGenerationInputs(
 
   // Build jobs from the current cut-order + scene. When jobsEnabled is false,
   // we pass `null` so `buildBridgeSettings` keeps the legacy single-anchor path.
-  const cutOrder = computeCutOrder(
-    rootIds,
-    nodesById,
-    machiningSettings.cutOrderStrategy,
-    machiningSettings.manualCutOrder,
-  )
-  const { jobs: computedJobs } = computeJobs(cutOrder, nodesById, machiningSettings, artboard)
+  const { jobs: computedJobs } = computeCutPlan(rootIds, nodesById, machiningSettings, artboard)
 
   const operations = getDerivedOperationsForArtObjects(artObjects)
   const jobSpecs = machiningSettings.jobsEnabled

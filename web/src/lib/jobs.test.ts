@@ -4,6 +4,7 @@ import type { ArtboardState, CanvasNode, GroupNode, Job, MachiningSettings, Rect
 import type { CutOrderResult } from './cutOrder'
 import {
   assignLeafIdsToJob,
+  computeCutPlan,
   computeJobs,
   manualJobsFromComputed,
   moveLeafToJob,
@@ -36,10 +37,9 @@ const BASE_SETTINGS: MachiningSettings = {
   pathAnchor: 'Center',
   clusterDetourRadius: null,
   circularInterpolation: true,
-  cutOrderStrategy: 'svg',
+  cutOrderStrategy: 'auto',
   manualCutOrder: null,
   jobsEnabled: true,
-  jobClusterRadius: 60,
   manualJobs: null,
 }
 
@@ -95,6 +95,7 @@ function cutOrderFromIds(ids: string[]): CutOrderResult {
     })),
     groupOrder: ['__root__'],
     groupNames: { __root__: 'Root' },
+    spannerNodeIds: [],
   }
 }
 
@@ -164,6 +165,84 @@ describe('computeJobs', () => {
 
     const next = assignLeafIdsToJob(cutOrder, base, ['b', 'c'], 'one')
     expect(next.map((job) => job.nodeIds)).toEqual([['a', 'b', 'c'], ['d']])
+  })
+
+  it('reorders leaves within a job by distance to the job anchor (Center)', () => {
+    // Four rects spaced around a centre point; cluster radius merges them all
+    // into one job. With `Center` anchor, the greedy order should start at the
+    // rect closest to the bounds centroid, then chain to the nearest remaining.
+    const childIds = ['tl', 'tr', 'bl', 'br']
+    const nodes: CanvasNode[] = [
+      group('import', childIds),
+      rect('tl', 100, 100, 20, 20, 'import'), // centroid (110, 110)
+      rect('tr', 130, 100, 20, 20, 'import'), // centroid (140, 110)
+      rect('bl', 100, 130, 20, 20, 'import'), // centroid (110, 140)
+      rect('br', 130, 130, 20, 20, 'import'), // centroid (140, 140)
+    ]
+    const scene = makeScene(nodes)
+    const plan = computeCutPlan(childIds, scene, BASE_SETTINGS, ARTBOARD)
+
+    // All four rects fall into one auto job whose Center anchor sits at (125,125).
+    // All four centroids are equidistant from the anchor; the stable tie-break
+    // picks `tl` first (lowest cutIndex). From `tl`, `tr` and `bl` are both at
+    // distance 30 → tie-break picks `tr` (lower cutIndex), then `br`, then `bl`.
+    expect(plan.jobs).toHaveLength(1)
+    expect(plan.jobs[0]!.nodeIds).toEqual(['tl', 'tr', 'br', 'bl'])
+    expect(plan.cutOrder.sequence.map((l) => l.nodeId)).toEqual(['tl', 'tr', 'br', 'bl'])
+  })
+
+  it('honors a non-default anchor: TopRight orders leaves from the top-right corner', () => {
+    const childIds = ['tl', 'tr', 'bl', 'br']
+    const nodes: CanvasNode[] = [
+      group('import', childIds),
+      rect('tl', 100, 100, 20, 20, 'import'),
+      rect('tr', 130, 100, 20, 20, 'import'),
+      rect('bl', 100, 130, 20, 20, 'import'),
+      rect('br', 130, 130, 20, 20, 'import'),
+    ]
+    const scene = makeScene(nodes)
+    const settings: MachiningSettings = {
+      ...BASE_SETTINGS,
+      manualJobs: [
+        {
+          id: 'job-1',
+          name: 'Job 1',
+          nodeIds: childIds,
+          pathAnchor: 'TopRight',
+          forceOwnJob: false,
+        },
+      ],
+    }
+    const plan = computeCutPlan(childIds, scene, settings, ARTBOARD)
+
+    // TopRight anchor resolves to (maxX, minY) of the union bounds = (150, 100).
+    // `tr` (140,110) is nearest. From `tr`: `tl` and `br` are equidistant (30),
+    // tie-break by cutIndex picks `tl`, then `bl` (nearest to `tl`), then `br`.
+    expect(plan.jobs).toHaveLength(1)
+    expect(plan.jobs[0]!.pathAnchor).toBe('TopRight')
+    expect(plan.jobs[0]!.nodeIds).toEqual(['tr', 'tl', 'bl', 'br'])
+  })
+
+  it('skips anchor-based reorder when the cut-order strategy is manual', () => {
+    const childIds = ['tl', 'tr', 'bl', 'br']
+    const nodes: CanvasNode[] = [
+      group('import', childIds),
+      rect('tl', 100, 100, 20, 20, 'import'),
+      rect('tr', 130, 100, 20, 20, 'import'),
+      rect('bl', 100, 130, 20, 20, 'import'),
+      rect('br', 130, 130, 20, 20, 'import'),
+    ]
+    const scene = makeScene(nodes)
+    const manualOrder = ['br', 'bl', 'tr', 'tl']
+    const settings: MachiningSettings = {
+      ...BASE_SETTINGS,
+      cutOrderStrategy: 'manual',
+      manualCutOrder: manualOrder,
+    }
+    const plan = computeCutPlan(childIds, scene, settings, ARTBOARD)
+
+    expect(plan.jobs[0]!.nodeIds).toEqual(manualOrder)
+    expect(plan.cutOrder.sequence.map((l) => l.nodeId)).toEqual(manualOrder)
   })
 
   it('moves a dragged leaf into another job and updates manual cut order', () => {

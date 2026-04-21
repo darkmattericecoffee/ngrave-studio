@@ -20,8 +20,7 @@ import {
 import { resizeGeneratorToBounds, supportsGeneratorResizeBack } from './lib/generators'
 import { getNodeSize } from './lib/nodeDimensions'
 import { getNodePreviewBounds, type Bounds } from './lib/nodeBounds'
-import { computeJobs, type ComputedJob } from './lib/jobs'
-import { computeCutOrder } from './lib/cutOrder'
+import { computeCutPlan, type ComputedJob } from './lib/jobs'
 import { getBoundsForNodes, getGuides, getLineGuideStops } from './lib/objectSnapping'
 import { getNodeTransformPatch } from './lib/transformUtils'
 import { generateCenterlineForNode } from './lib/centerline'
@@ -506,8 +505,12 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   }, [])
 
   const getMarqueeHitHighlights = useCallback(
-    (currentMarquee: MarqueeRect): MarqueeHighlight[] =>
-      getMarqueeCandidateIds().flatMap((nodeId) => {
+    (currentMarquee: MarqueeRect): MarqueeHighlight[] => {
+      // Direct selection targets strokes — treat shapes whose AABB fully
+      // encloses the marquee as non-hits (the marquee sat inside the fill
+      // without crossing any edge). Group mode keeps the simple AABB overlap.
+      const strict = getEffectiveInteractionMode(interactionMode, directSelectionModifierActive) === 'direct'
+      return getMarqueeCandidateIds().flatMap((nodeId) => {
         const node = nodeRefs.current.get(nodeId)
         if (!node || !node.isVisible()) {
           return []
@@ -518,9 +521,19 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
           return []
         }
 
+        if (strict) {
+          const shapeContainsMarquee =
+            rect.x <= currentMarquee.x &&
+            rect.y <= currentMarquee.y &&
+            rect.x + rect.width >= currentMarquee.x + currentMarquee.width &&
+            rect.y + rect.height >= currentMarquee.y + currentMarquee.height
+          if (shapeContainsMarquee) return []
+        }
+
         return [{ id: nodeId, rect }]
-      }),
-    [getMarqueeCandidateIds],
+      })
+    },
+    [getMarqueeCandidateIds, interactionMode, directSelectionModifierActive],
   )
 
   const [marqueeHighlights, setMarqueeHighlights] = useState<MarqueeHighlight[]>([])
@@ -1542,13 +1555,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     // Overlays are editing affordances tied to the Cut Order tab — don't
     // clutter the canvas while the user is on the Layers tab.
     if (layerPanelView !== 'cutOrder') return []
-    const cutOrder = computeCutOrder(
-      rootIds,
-      nodesById,
-      machiningSettings.cutOrderStrategy,
-      machiningSettings.manualCutOrder,
-    )
-    const { jobs } = computeJobs(cutOrder, nodesById, machiningSettings, storeArtboard)
+    const { jobs } = computeCutPlan(rootIds, nodesById, machiningSettings, storeArtboard)
     // Draw overlay only when splitting actually produced multiple jobs —
     // a single job is just "whole file" and the existing anchor preview
     // already covers that case.
@@ -1895,6 +1902,39 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
               />
             ) : null}
 
+            {/* Per-job fill. Drawn BEFORE the shape stack so shapes sit above
+                it in hit-order: clicking a shape always hits the shape first,
+                and only clicks on empty fill fall through to the job. */}
+            {computedJobs.length > 1
+              ? computedJobs.map((job, jobIndex) => {
+                  const { boundsMm } = job
+                  const hue = (jobIndex * 57) % 360
+                  const fillColor = `hsl(${hue}, 75%, 55%)`
+                  const active = selectedJobId === job.id
+                  return (
+                    <Rect
+                      key={`job-fill-${job.id}`}
+                      name="job-fill"
+                      x={boundsMm.minX}
+                      y={boundsMm.minY}
+                      width={boundsMm.maxX - boundsMm.minX}
+                      height={boundsMm.maxY - boundsMm.minY}
+                      fill={fillColor}
+                      opacity={active ? 0.18 : 0.08}
+                      listening={effectiveInteractionMode !== 'direct'}
+                      onClick={(e) => {
+                        e.cancelBubble = true
+                        setSelectedJob(active ? null : job.id)
+                      }}
+                      onTap={(e) => {
+                        e.cancelBubble = true
+                        setSelectedJob(active ? null : job.id)
+                      }}
+                    />
+                  )
+                })
+              : null}
+
             {showEngravePreview
               ? (
                 <EngravePreviewStack
@@ -1982,20 +2022,14 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                   const { boundsMm, anchorPointMm } = job
                   const hue = (jobIndex * 57) % 360
                   const strokeColor = `hsl(${hue}, 75%, 55%)`
-                  const fillColor = `hsla(${hue}, 75%, 55%, 0.06)`
                   const arm = 10 / viewport.scale
                   const strokeWidth = 1.2 / viewport.scale
                   const active = selectedJobId === job.id
                   const artboardLeft = 0
                   const artboardBottom = storeArtboard.height
                   return (
-                    <Group
-                      key={`job-overlay-${job.id}`}
-                      onClick={(e) => {
-                        e.cancelBubble = true
-                        setSelectedJob(active ? null : job.id)
-                      }}
-                    >
+                    <Group key={`job-overlay-${job.id}`}>
+                      {/* Clickable border — stroke-only hit so shapes below stay reachable. */}
                       <Rect
                         x={boundsMm.minX}
                         y={boundsMm.minY}
@@ -2003,78 +2037,95 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                         height={boundsMm.maxY - boundsMm.minY}
                         stroke={strokeColor}
                         strokeWidth={(active ? 1.8 : 0.9) / viewport.scale}
-                        dash={[6 / viewport.scale, 4 / viewport.scale]}
-                        fill={fillColor}
+                        opacity={0.5}
+                        hitStrokeWidth={Math.max(8 / viewport.scale, 6)}
+                        hitFunc={(ctx, shape) => {
+                          const origFillShape = ctx.fillShape
+                          ctx.fillShape = () => {}
+                          shape._sceneFunc(ctx)
+                          ctx.fillShape = origFillShape
+                        }}
+                        onClick={(e) => {
+                          e.cancelBubble = true
+                          setSelectedJob(active ? null : job.id)
+                        }}
+                        onTap={(e) => {
+                          e.cancelBubble = true
+                          setSelectedJob(active ? null : job.id)
+                        }}
                       />
-                      {/* Offset guide — horizontal, crosshair → artboard left edge. */}
-                      <Line
-                        points={[
-                          artboardLeft,
-                          anchorPointMm.y,
-                          anchorPointMm.x,
-                          anchorPointMm.y,
-                        ]}
-                        stroke={strokeColor}
-                        strokeWidth={strokeWidth}
-                        dash={[3 / viewport.scale, 3 / viewport.scale]}
-                      />
-                      {/* Offset guide — vertical, crosshair → artboard bottom edge. */}
-                      <Line
-                        points={[
-                          anchorPointMm.x,
-                          anchorPointMm.y,
-                          anchorPointMm.x,
-                          artboardBottom,
-                        ]}
-                        stroke={strokeColor}
-                        strokeWidth={strokeWidth}
-                        dash={[3 / viewport.scale, 3 / viewport.scale]}
-                      />
-                      {/* Crosshair at anchor. */}
-                      <Line
-                        points={[
-                          anchorPointMm.x - arm,
-                          anchorPointMm.y,
-                          anchorPointMm.x + arm,
-                          anchorPointMm.y,
-                        ]}
-                        stroke={strokeColor}
-                        strokeWidth={strokeWidth * 1.2}
-                        lineCap="round"
-                      />
-                      <Line
-                        points={[
-                          anchorPointMm.x,
-                          anchorPointMm.y - arm,
-                          anchorPointMm.x,
-                          anchorPointMm.y + arm,
-                        ]}
-                        stroke={strokeColor}
-                        strokeWidth={strokeWidth * 1.2}
-                        lineCap="round"
-                      />
-                      <Text
-                        x={anchorPointMm.x + arm}
-                        y={anchorPointMm.y - arm - 14 / viewport.scale}
-                        text={`J${jobIndex + 1}`}
-                        fontSize={11 / viewport.scale}
-                        fill={strokeColor}
-                        fontStyle="bold"
-                      />
-                      <Text
-                        x={artboardLeft + 2 / viewport.scale}
-                        y={anchorPointMm.y - 14 / viewport.scale}
-                        text={`${job.crossOffsetFromArtboardBL.x.toFixed(1)} mm`}
-                        fontSize={10 / viewport.scale}
-                        fill={strokeColor}
-                      />
-                      <Text
-                        x={anchorPointMm.x + 4 / viewport.scale}
-                        y={artboardBottom - 14 / viewport.scale}
-                        text={`${job.crossOffsetFromArtboardBL.y.toFixed(1)} mm`}
-                        fontSize={10 / viewport.scale}
-                        fill={strokeColor}
-                      />
+                      {/* Non-interactive guides/labels — never intercept clicks. */}
+                      <Group listening={false}>
+                        {/* Offset guide — horizontal, crosshair → artboard left edge. */}
+                        <Line
+                          points={[
+                            artboardLeft,
+                            anchorPointMm.y,
+                            anchorPointMm.x,
+                            anchorPointMm.y,
+                          ]}
+                          stroke={strokeColor}
+                          strokeWidth={strokeWidth}
+                          dash={[3 / viewport.scale, 3 / viewport.scale]}
+                        />
+                        {/* Offset guide — vertical, crosshair → artboard bottom edge. */}
+                        <Line
+                          points={[
+                            anchorPointMm.x,
+                            anchorPointMm.y,
+                            anchorPointMm.x,
+                            artboardBottom,
+                          ]}
+                          stroke={strokeColor}
+                          strokeWidth={strokeWidth}
+                          dash={[3 / viewport.scale, 3 / viewport.scale]}
+                        />
+                        {/* Crosshair at anchor. */}
+                        <Line
+                          points={[
+                            anchorPointMm.x - arm,
+                            anchorPointMm.y,
+                            anchorPointMm.x + arm,
+                            anchorPointMm.y,
+                          ]}
+                          stroke={strokeColor}
+                          strokeWidth={strokeWidth * 1.2}
+                          lineCap="round"
+                        />
+                        <Line
+                          points={[
+                            anchorPointMm.x,
+                            anchorPointMm.y - arm,
+                            anchorPointMm.x,
+                            anchorPointMm.y + arm,
+                          ]}
+                          stroke={strokeColor}
+                          strokeWidth={strokeWidth * 1.2}
+                          lineCap="round"
+                        />
+                        <Text
+                          x={anchorPointMm.x + arm}
+                          y={anchorPointMm.y - arm - 14 / viewport.scale}
+                          text={`J${jobIndex + 1}`}
+                          fontSize={11 / viewport.scale}
+                          fill={strokeColor}
+                          fontStyle="bold"
+                        />
+                        <Text
+                          x={artboardLeft + 2 / viewport.scale}
+                          y={anchorPointMm.y - 14 / viewport.scale}
+                          text={`${job.crossOffsetFromArtboardBL.x.toFixed(1)} mm`}
+                          fontSize={10 / viewport.scale}
+                          fill={strokeColor}
+                        />
+                        <Text
+                          x={anchorPointMm.x + 4 / viewport.scale}
+                          y={artboardBottom - 14 / viewport.scale}
+                          text={`${job.crossOffsetFromArtboardBL.y.toFixed(1)} mm`}
+                          fontSize={10 / viewport.scale}
+                          fill={strokeColor}
+                        />
+                      </Group>
                     </Group>
                   )
                 })

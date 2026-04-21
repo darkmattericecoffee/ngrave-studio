@@ -1,5 +1,5 @@
 import type { ArtboardState, CanvasNode, Job, MachiningSettings, PathAnchor } from '../types/editor'
-import type { CutOrderResult } from './cutOrder'
+import { computeCutOrder, type CutOrderLeaf, type CutOrderResult } from './cutOrder'
 import { boundsCentroid, getNodePreviewBounds, type Bounds } from './nodeBounds'
 
 export interface ComputedJob extends Job {
@@ -15,32 +15,7 @@ export interface ComputedJob extends Job {
   fromManualOverride: boolean
 }
 
-const MIN_CLUSTER_RADIUS_MM = 40
-const MAX_CLUSTER_RADIUS_MM = 200
-const AUTO_CLUSTER_FRACTION = 0.15
 const JOB_ID_PREFIX = 'job'
-
-/** Resolve the effective cluster radius in mm. Callers may pass the stored
- *  value; `null` triggers the artboard-scaled default. */
-export function resolveJobClusterRadius(
-  stored: number | null,
-  artboard: ArtboardState,
-): number {
-  if (stored != null && stored > 0) return stored
-  const span = Math.max(artboard.width, artboard.height)
-  return clamp(span * AUTO_CLUSTER_FRACTION, MIN_CLUSTER_RADIUS_MM, MAX_CLUSTER_RADIUS_MM)
-}
-
-function clamp(v: number, lo: number, hi: number): number {
-  return Math.min(Math.max(v, lo), hi)
-}
-
-function centroidDistance(
-  a: { x: number; y: number },
-  b: { x: number; y: number },
-): number {
-  return Math.hypot(a.x - b.x, a.y - b.y)
-}
 
 function anchorPoint(anchor: PathAnchor, bounds: Bounds): { x: number; y: number } {
   const midX = (bounds.minX + bounds.maxX) / 2
@@ -74,29 +49,6 @@ function unionBounds(all: (Bounds | null)[]): Bounds | null {
       : b
   }
   return out
-}
-
-/** Simple union-find over integer indices. */
-class UnionFind {
-  parent: number[]
-  constructor(n: number) {
-    this.parent = Array.from({ length: n }, (_, i) => i)
-  }
-  find(i: number): number {
-    let r = i
-    while (this.parent[r] !== r) r = this.parent[r]
-    while (this.parent[i] !== r) {
-      const n = this.parent[i]
-      this.parent[i] = r
-      i = n
-    }
-    return r
-  }
-  union(a: number, b: number): void {
-    const ra = this.find(a)
-    const rb = this.find(b)
-    if (ra !== rb) this.parent[ra] = rb
-  }
 }
 
 function hashString(input: string): string {
@@ -319,6 +271,37 @@ export interface MoveLeafToJobResult {
   manualJobs: Job[]
 }
 
+/** Reorder the `manualJobs` list so the job sequence follows `nextJobIds`.
+ *  Cut order is rewritten to match the new job order; leaf order inside each
+ *  job is preserved. Unknown ids are ignored; jobs absent from `nextJobIds`
+ *  are appended at the tail so we never lose assignments. */
+export function reorderManualJobs(
+  cutOrder: CutOrderResult,
+  jobs: Job[] | null,
+  nextJobIds: string[],
+): MoveLeafToJobResult {
+  const normalized = normalizeManualJobs(cutOrder, jobs)
+  const byId = new Map(normalized.map((job) => [job.id, job]))
+  const seen = new Set<string>()
+  const reordered: Job[] = []
+  for (const id of nextJobIds) {
+    const job = byId.get(id)
+    if (job && !seen.has(id)) {
+      reordered.push(job)
+      seen.add(id)
+    }
+  }
+  for (const job of normalized) {
+    if (!seen.has(job.id)) reordered.push(job)
+  }
+  const renumbered = renumberJobNames(reordered)
+  const manualCutOrder: string[] = []
+  for (const job of renumbered) {
+    for (const nodeId of job.nodeIds) manualCutOrder.push(nodeId)
+  }
+  return { manualCutOrder, manualJobs: renumbered }
+}
+
 export function moveLeafToJob(
   cutOrder: CutOrderResult,
   jobs: Job[] | null,
@@ -387,34 +370,46 @@ interface LeafWithBounds {
   centroid: { x: number; y: number }
   cutIndex: number
   forceOwnJob: boolean
-  /** Topmost SVG group ancestor's id — used as the primary clustering key so
-   *  everything imported together defaults to one job. Null if the leaf has
-   *  no group ancestor (loose top-level shape). */
-  topGroupId: string | null
+  /** Blob id assigned by `computeCutOrder` — already reflects spatial clustering. */
+  blobId: string
 }
 
-/** Walk up parentId to the topmost `type === 'group'` ancestor. Returns null
- *  if the leaf has no group ancestor. We use the *topmost* (not nearest) group
- *  so deeply nested imports still land in a single job. */
-function topGroupAncestor(
-  nodeId: string,
-  nodesById: Record<string, CanvasNode>,
-): string | null {
-  let topGroup: string | null = null
-  let cursor: string | null = nodeId
-  const seen = new Set<string>()
-  while (cursor && !seen.has(cursor)) {
-    seen.add(cursor)
-    const node: CanvasNode | undefined = nodesById[cursor]
-    if (!node) break
-    if (node.type === 'group') topGroup = cursor
-    cursor = node.parentId
+/** Greedy radial ordering: first leaf is nearest to `anchorPt`; every next leaf
+ *  is the remaining one nearest to the previously picked leaf's centroid.
+ *  Ties broken by original `cutIndex` so the output is deterministic. */
+function reorderLeavesByAnchor(
+  leaves: LeafWithBounds[],
+  anchorPt: { x: number; y: number },
+): LeafWithBounds[] {
+  if (leaves.length <= 1) return leaves
+  const remaining = leaves.slice()
+  const ordered: LeafWithBounds[] = []
+  let target = anchorPt
+  while (remaining.length > 0) {
+    let bestIdx = 0
+    let best = remaining[0]!
+    let bestDist = Math.hypot(best.centroid.x - target.x, best.centroid.y - target.y)
+    for (let i = 1; i < remaining.length; i += 1) {
+      const leaf = remaining[i]!
+      const d = Math.hypot(leaf.centroid.x - target.x, leaf.centroid.y - target.y)
+      if (d < bestDist - 1e-9) {
+        bestDist = d
+        bestIdx = i
+        best = leaf
+      } else if (Math.abs(d - bestDist) < 1e-9 && leaf.cutIndex < best.cutIndex) {
+        bestIdx = i
+        best = leaf
+      }
+    }
+    remaining.splice(bestIdx, 1)
+    ordered.push(best)
+    target = best.centroid
   }
-  return topGroup
+  return ordered
 }
 
 /** Build per-leaf geometry from the cut order, dropping leaves without bounds
- *  (e.g. invisible nodes) so every clustering step has real coordinates. */
+ *  (e.g. invisible nodes) so every partition step has real coordinates. */
 function leavesWithGeometry(
   cutOrder: CutOrderResult,
   nodesById: Record<string, CanvasNode>,
@@ -439,88 +434,51 @@ function leavesWithGeometry(
       centroid: boundsCentroid(bounds),
       cutIndex: leaf.index,
       forceOwnJob: forceFlag.get(leaf.nodeId) ?? false,
-      topGroupId: topGroupAncestor(leaf.nodeId, nodesById),
+      blobId: leaf.groupId,
     })
   }
   return out
 }
 
-/** Auto-partition leaves into jobs.
- *
- *  Default rule is **one SVG group = one job**: leaves that share a topmost
- *  group ancestor cluster together. Loose leaves (no group ancestor) each form
- *  their own singleton. A second pass then merges group-clusters whose bounds
- *  centroids are within `clusterRadius` of each other — this collapses two
- *  adjacent imports into a single job when the user clearly intends them as a
- *  unit. Leaves flagged `forceOwnJob` stay as singletons regardless.
- *
- *  The old per-leaf proximity pass is gone: per-leaf clustering fragments
- *  grouped SVG imports into dozens of tiny jobs, which was the whole reason
- *  the feedback came in.
- */
+/** Partition leaves into jobs by honoring the blob ids emitted by
+ *  `computeCutOrder`. One blob = one job. `forceOwnJob` leaves split off into
+ *  their own singleton job regardless of their blob. */
 function autoPartition(
   leaves: LeafWithBounds[],
-  clusterRadius: number,
-): { groups: LeafWithBounds[][]; bigSpannerNodeIds: Set<string> } {
-  // Big-spanner detection is still available for manual overrides (the
-  // context menu surfaces it) but we no longer *auto*-promote spanners to
-  // their own job — most "spanners" in practice are the passe-partout drawn
-  // together with the inner shapes, and the user already grouped them in the
-  // SVG. The set stays empty here; `forceOwnJob` handles explicit promotion.
-  const bigSpannerNodeIds = new Set<string>()
-
-  // Bucket by topmost group ancestor; loose leaves go to a synthetic key
-  // per-nodeId so each loose shape is its own singleton.
-  const buckets = new Map<string, LeafWithBounds[]>()
-  const singletons: LeafWithBounds[] = []
+  groupOrder: string[],
+): LeafWithBounds[][] {
+  const forceSingletons: LeafWithBounds[] = []
+  const byBlob = new Map<string, LeafWithBounds[]>()
   for (const leaf of leaves) {
     if (leaf.forceOwnJob) {
-      singletons.push(leaf)
+      forceSingletons.push(leaf)
       continue
     }
-    const key = leaf.topGroupId ?? `__loose__${leaf.nodeId}`
-    const list = buckets.get(key) ?? []
+    const list = byBlob.get(leaf.blobId) ?? []
     list.push(leaf)
-    buckets.set(key, list)
+    byBlob.set(leaf.blobId, list)
   }
 
-  // Merge adjacent buckets by centroid proximity. Each bucket's centroid is
-  // the centroid of its union-bounds — more stable than averaging leaf
-  // centroids for non-uniform groups.
-  const bucketEntries = [...buckets.values()]
-  const bucketCentroids = bucketEntries.map((bucket) => {
-    const union = unionBounds(bucket.map((l) => l.bounds))!
-    return boundsCentroid(union)
-  })
-  const uf = new UnionFind(bucketEntries.length)
-  for (let i = 0; i < bucketEntries.length; i += 1) {
-    for (let j = i + 1; j < bucketEntries.length; j += 1) {
-      if (centroidDistance(bucketCentroids[i], bucketCentroids[j]) <= clusterRadius) {
-        uf.union(i, j)
-      }
+  const groups: LeafWithBounds[][] = []
+  for (const leaf of forceSingletons) groups.push([leaf])
+  for (const blobId of groupOrder) {
+    const bucket = byBlob.get(blobId)
+    if (bucket && bucket.length > 0) {
+      groups.push([...bucket].sort((a, b) => a.cutIndex - b.cutIndex))
     }
   }
-
-  const mergedByRoot = new Map<number, LeafWithBounds[]>()
-  for (let i = 0; i < bucketEntries.length; i += 1) {
-    const root = uf.find(i)
-    const list = mergedByRoot.get(root) ?? []
-    list.push(...bucketEntries[i])
-    mergedByRoot.set(root, list)
+  // Any stray blobs not present in groupOrder (defensive — shouldn't happen).
+  for (const [blobId, bucket] of byBlob) {
+    if (!groupOrder.includes(blobId) && bucket.length > 0) {
+      groups.push([...bucket].sort((a, b) => a.cutIndex - b.cutIndex))
+    }
   }
-
-  const allGroups: LeafWithBounds[][] = []
-  for (const leaf of singletons) allGroups.push([leaf])
-  for (const group of mergedByRoot.values()) allGroups.push(group)
-
-  // Stable order: by the minimum cut-index inside each group.
-  allGroups.sort(
-    (a, b) =>
-      Math.min(...a.map((l) => l.cutIndex)) - Math.min(...b.map((l) => l.cutIndex)),
-  )
-  for (const g of allGroups) g.sort((a, b) => a.cutIndex - b.cutIndex)
-
-  return { groups: allGroups, bigSpannerNodeIds }
+  groups.sort((a, b) => {
+    // Only reorder force-singletons relative to blob jobs by their cut index;
+    // blob jobs remain in groupOrder.
+    return Math.min(...a.map((l) => l.cutIndex)) - Math.min(...b.map((l) => l.cutIndex))
+  })
+  return groups
 }
 
 export interface ComputeJobsResult {
@@ -537,8 +495,13 @@ export function computeJobs(
   artboard: ArtboardState,
 ): ComputeJobsResult {
   const leaves = leavesWithGeometry(cutOrder, nodesById, settings.manualJobs)
-  const clusterRadius = resolveJobClusterRadius(settings.jobClusterRadius, artboard)
-  const { groups: autoGroupsRaw, bigSpannerNodeIds } = autoPartition(leaves, clusterRadius)
+  const autoGroupsRaw = autoPartition(leaves, cutOrder.groupOrder)
+  const bigSpannerNodeIds = new Set(cutOrder.spannerNodeIds)
+
+  // When the user has manually ordered the cut sequence, respect it verbatim.
+  // Otherwise reorder leaves within each job so the first cut lands nearest the
+  // job's resolved anchor point, with the rest chained greedily.
+  const skipAnchorReorder = settings.cutOrderStrategy === 'manual'
 
   const finalize = (
     groups: LeafWithBounds[][],
@@ -549,12 +512,16 @@ export function computeJobs(
     forceFlagFor: (nodeIds: string[]) => boolean,
   ): ComputedJob[] => {
     return groups.map((group, index) => {
-      const nodeIds = group.map((l) => l.nodeId)
+      const membershipIds = group.map((l) => l.nodeId)
       const bounds = unionBounds(group.map((l) => l.bounds))!
-      const anchor = anchorFor(nodeIds)
+      const anchor = anchorFor(membershipIds)
       const anchorPt = anchorPoint(anchor, bounds)
+      const orderedGroup = skipAnchorReorder ? group : reorderLeavesByAnchor(group, anchorPt)
+      const nodeIds = orderedGroup.map((l) => l.nodeId)
       return {
-        id: idFor(index, nodeIds),
+        // Hash from cut-index membership so job ids stay stable even when the
+        // anchor-driven reorder shuffles `nodeIds`.
+        id: idFor(index, membershipIds),
         name: nameHint(index),
         nodeIds,
         pathAnchor: anchor,
@@ -617,4 +584,63 @@ export function computeJobs(
   )
 
   return { jobs: manualJobs, autoJobs }
+}
+
+/** Rebuild `cutOrder.sequence` so each job's leaves appear in the order stored
+ *  on `jobs[i].nodeIds`. Membership and group metadata are preserved — only the
+ *  ordering and per-leaf `index` change. Any leaf missing from the jobs (e.g.
+ *  invisible nodes filtered out by `computeJobs`) is appended at the tail so we
+ *  never drop entries. */
+export function reorderCutOrderByJobs(
+  cutOrder: CutOrderResult,
+  jobs: ComputedJob[],
+): CutOrderResult {
+  const leafById = new Map(cutOrder.sequence.map((leaf) => [leaf.nodeId, leaf]))
+  const used = new Set<string>()
+  const sequence: CutOrderLeaf[] = []
+  for (const job of jobs) {
+    for (const nodeId of job.nodeIds) {
+      if (used.has(nodeId)) continue
+      const leaf = leafById.get(nodeId)
+      if (!leaf) continue
+      used.add(nodeId)
+      sequence.push({ ...leaf, index: sequence.length })
+    }
+  }
+  for (const leaf of cutOrder.sequence) {
+    if (used.has(leaf.nodeId)) continue
+    used.add(leaf.nodeId)
+    sequence.push({ ...leaf, index: sequence.length })
+  }
+  return { ...cutOrder, sequence }
+}
+
+export interface CutPlan {
+  cutOrder: CutOrderResult
+  jobs: ComputedJob[]
+  autoJobs: ComputedJob[]
+}
+
+/** One-stop entry point used by the UI and the bridge adapter: run the cut-
+ *  order planner, partition into jobs, and — in `auto` mode — rewrite the
+ *  sequence so leaves inside each job radiate out from that job's anchor.
+ *  `manual` mode skips the reorder: the user has explicit control. */
+export function computeCutPlan(
+  rootIds: string[],
+  nodesById: Record<string, CanvasNode>,
+  settings: MachiningSettings,
+  artboard: ArtboardState,
+): CutPlan {
+  const initialCutOrder = computeCutOrder(
+    rootIds,
+    nodesById,
+    settings.cutOrderStrategy,
+    settings.manualCutOrder,
+    artboard,
+  )
+  const { jobs, autoJobs } = computeJobs(initialCutOrder, nodesById, settings, artboard)
+  if (settings.cutOrderStrategy === 'manual') {
+    return { cutOrder: initialCutOrder, jobs, autoJobs }
+  }
+  return { cutOrder: reorderCutOrderByJobs(initialCutOrder, jobs), jobs, autoJobs }
 }

@@ -53,17 +53,14 @@ export interface MachiningSettings {
   clusterDetourRadius: number | null
   /** Emit G2/G3 arcs instead of a polyline of G1s for curves — smaller gcode. */
   circularInterpolation: boolean
-  /** How sibling SVG groups are ordered when computing the cut sequence. */
-  cutOrderStrategy: 'svg' | 'ltr' | 'btt' | 'manual'
+  /** Cut-sequence strategy: `auto` runs the magic blob planner; `manual` honors the user-dragged order. */
+  cutOrderStrategy: 'auto' | 'manual'
   /** Explicit cut-order override (list of leaf nodeIds) used when strategy === 'manual'. */
   manualCutOrder: string[] | null
   /** Split the program into multiple handheld-CNC "jobs" — each job pauses the
    *  machine before resuming so the user can physically reposition and rezero
    *  the router. Disabling produces a single contiguous program (legacy output). */
   jobsEnabled: boolean
-  /** Centroid proximity (mm) for auto-clustering leaves into the same job.
-   *  `null` defaults to `clamp(max(artboard.w, artboard.h) * 0.15, 40, 200)`. */
-  jobClusterRadius: number | null
   /** User-pinned job partition. When non-null, wins over the auto-derived one. */
   manualJobs: Job[] | null
 }
