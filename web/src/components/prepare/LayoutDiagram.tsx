@@ -5,6 +5,14 @@ import type { Bounds } from '../../lib/nodeBounds'
 import type { ComputedJob } from '../../lib/jobs'
 import { MATERIAL_PRESETS, type MaterialPreset } from '../../lib/materialPresets'
 
+interface CutBadge {
+  nodeId: string
+  x: number
+  y: number
+  jobIndex: number
+  step: number
+}
+
 interface LayoutDiagramProps {
   artboard: ArtboardState
   /** Inner <g> content of the design SVG (pre-built by the parent via exportToSVG). */
@@ -13,6 +21,8 @@ interface LayoutDiagramProps {
   designBounds: Bounds | null
   jobs: ComputedJob[]
   materialPreset: MaterialPreset
+  /** When non-null, render numbered badges at each leaf's (x,y) in cut order. */
+  cutBadges?: CutBadge[] | null
 }
 
 // Extra mm reserved around the material rect for dimension lines and labels.
@@ -110,6 +120,7 @@ export function LayoutDiagram({
   designBounds,
   jobs,
   materialPreset,
+  cutBadges,
 }: LayoutDiagramProps) {
   const matW = artboard.width
   const matH = artboard.height
@@ -404,6 +415,34 @@ export function LayoutDiagram({
         }
         return nodes
       })()}
+
+      {/* Cut-order number badges — rendered at each leaf's artboard-space
+          (minX, minY). Darker hue bg + lighter hue text, matching the canvas. */}
+      {cutBadges && cutBadges.length > 0
+        ? cutBadges.map((b) => {
+            const hue = (b.jobIndex * 57) % 360
+            const bg = `hsl(${hue}, 65%, 28%)`
+            const fg = `hsl(${hue}, 90%, 88%)`
+            const stroke = `hsl(${hue}, 70%, 55%)`
+            const r = 4.5
+            return (
+              <g key={`cut-badge-${b.nodeId}`}>
+                <circle cx={b.x} cy={b.y} r={r} fill={bg} stroke={stroke} strokeWidth={0.5} />
+                <text
+                  x={b.x}
+                  y={b.y + 2}
+                  fontSize={5.2}
+                  textAnchor="middle"
+                  fill={fg}
+                  fontFamily="sans-serif"
+                  fontWeight={700}
+                >
+                  {b.step}
+                </text>
+              </g>
+            )
+          })
+        : null}
     </svg>
   )
 }

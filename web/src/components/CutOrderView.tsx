@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight } from '@gravity-ui/icons'
 import type { CanvasNode } from '../types/editor'
 import type { CutOrderResult } from '../lib/cutOrder'
 import type { ComputedJob } from '../lib/jobs'
 import { buildLayerCncSummary } from '../lib/layerTreePresentation'
-import { LayerCncSummaryTag, LayerPreview } from './LayerTree'
+import { JobPreview, LayerCncSummaryTag, LayerPreview } from './LayerTree'
+import { useEditorStore } from '../store'
 
 function cn(...classes: (string | boolean | undefined | null)[]) {
   return classes.filter(Boolean).join(' ')
@@ -29,6 +31,7 @@ export function CutOrderView({
   cutOrder,
   nodesById,
   selectedIds,
+  selectedJobId,
   defaultDepth,
   onSelect,
   onHover,
@@ -41,10 +44,12 @@ export function CutOrderView({
   onRenameJob,
   onReorderJobs,
   onJobDragStart,
+  onSelectJob,
 }: {
   cutOrder: CutOrderResult
   nodesById: Record<string, CanvasNode>
   selectedIds: string[]
+  selectedJobId?: string | null
   defaultDepth: number
   jobs: ComputedJob[]
   onSelect: (id: string, e: React.MouseEvent) => void
@@ -57,7 +62,16 @@ export function CutOrderView({
   onRenameJob?: (jobId: string, name: string) => void
   onReorderJobs?: (nextJobIds: string[]) => void
   onJobDragStart?: () => void
+  onSelectJob?: (jobId: string) => void
 }) {
+  const hoveredId = useEditorStore((s) => s.hoveredId)
+  const rowRefs = useRef<Map<string, HTMLDivElement | null>>(new Map())
+  useEffect(() => {
+    if (!hoveredId) return
+    const el = rowRefs.current.get(hoveredId)
+    if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [hoveredId])
+
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTargetId, setDropTargetId] = useState<string | null>(null)
   const [dropBefore, setDropBefore] = useState(true)
@@ -66,6 +80,7 @@ export function CutOrderView({
   const [draggingJobId, setDraggingJobId] = useState<string | null>(null)
   const [jobDropTargetId, setJobDropTargetId] = useState<string | null>(null)
   const [hoveredLeftHandleJobId, setHoveredLeftHandleJobId] = useState<string | null>(null)
+  const [collapsedJobs, setCollapsedJobs] = useState<Record<string, boolean>>({})
 
   if (cutOrder.sequence.length === 0) {
     return (
@@ -150,6 +165,7 @@ export function CutOrderView({
           const isDraggingThisJob = draggingJobId === section.id
           const canReorderJobs = Boolean(onReorderJobs) && sections.length > 1
           const isRenaming = renamingJobId === section.id
+          const isCollapsed = collapsedJobs[section.id] ?? false
           return (
           <div
             key={`${section.id}-${section.leaves[0]?.index ?? 0}`}
@@ -183,8 +199,17 @@ export function CutOrderView({
             <div
               className={cn(
                 'group/job relative mb-1 flex items-center gap-2 rounded px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground',
+                selectedJobId === section.id && 'bg-[var(--surface-tertiary)] text-foreground',
+                onSelectJob && 'cursor-pointer',
                 isJobDropTarget && 'before:absolute before:inset-x-0 before:-top-0.5 before:h-0.5 before:rounded before:bg-primary',
               )}
+              onClick={(e) => {
+                if (isRenaming) return
+                if (!onSelectJob) return
+                const target = e.target as HTMLElement
+                if (target.closest('input,button[aria-label^="Expand"],button[aria-label^="Collapse"]')) return
+                onSelectJob(section.id)
+              }}
               onDragOver={(e) => {
                 if (!draggingJobId || draggingJobId === section.id) return
                 e.preventDefault()
@@ -235,7 +260,27 @@ export function CutOrderView({
                   <GroupDragHandleIcon />
                 </span>
               ) : null}
+              <button
+                type="button"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[var(--surface-secondary)] text-muted-foreground hover:bg-[var(--surface-tertiary)] hover:text-foreground"
+                aria-label={isCollapsed ? `Expand ${section.name}` : `Collapse ${section.name}`}
+                aria-expanded={!isCollapsed}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setCollapsedJobs((current) => ({ ...current, [section.id]: !isCollapsed }))
+                }}
+              >
+                {isCollapsed ? (
+                  <ChevronRight className="h-4 w-4" aria-hidden />
+                ) : (
+                  <ChevronDown className="h-4 w-4" aria-hidden />
+                )}
+              </button>
               <span className="h-px flex-1 bg-border" />
+              {(() => {
+                const j = jobs.find((job) => job.id === section.id)
+                return j ? <JobPreview job={j} nodesById={nodesById} size={22} /> : null
+              })()}
               <span className="font-mono text-[10px] tracking-normal text-muted-foreground/80">
                 J{sectionIndex + 1}
               </span>
@@ -281,6 +326,7 @@ export function CutOrderView({
               </span>
               <span className="h-px flex-1 bg-border" />
             </div>
+            {!isCollapsed && (
             <div className="space-y-0.5">
               {section.leaves.map((leaf) => {
                 const node = nodesById[leaf.nodeId]
@@ -308,10 +354,15 @@ export function CutOrderView({
                       </button>
                     ) : null}
                     <div
+                      ref={(el) => {
+                        if (el) rowRefs.current.set(leaf.nodeId, el)
+                        else rowRefs.current.delete(leaf.nodeId)
+                      }}
                       className={cn(
-                        'relative',
+                        'relative rounded-md',
                         isDropTarget && dropBefore && 'before:absolute before:inset-x-2 before:-top-px before:h-0.5 before:rounded before:bg-primary',
                         isDropTarget && !dropBefore && 'after:absolute after:inset-x-2 after:-bottom-px after:h-0.5 after:rounded after:bg-primary',
+                        hoveredId === leaf.nodeId && 'bg-primary/20',
                       )}
                       draggable
                       onDragStart={(e) => {
@@ -367,7 +418,14 @@ export function CutOrderView({
                           >
                             ⋮⋮
                           </span>
-                          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold tabular-nums text-primary">
+                          <span
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold tabular-nums"
+                            style={{
+                              backgroundColor: `hsl(${(sectionIndex * 57) % 360}, 65%, 28%)`,
+                              color: `hsl(${(sectionIndex * 57) % 360}, 90%, 88%)`,
+                              boxShadow: `0 0 0 1px hsl(${(sectionIndex * 57) % 360}, 70%, 55%)`,
+                            }}
+                          >
                             {leaf.index + 1}
                           </span>
                           <LayerPreview node={node} nodesById={nodesById} />
@@ -387,6 +445,7 @@ export function CutOrderView({
                 )
               })}
             </div>
+            )}
           </div>
           )
         })}

@@ -1,19 +1,22 @@
-import { useMemo, useRef, useState } from 'react'
-import { Button } from '@heroui/react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Selection, SortDescriptor } from '@heroui/react'
+import { Button, Chip, Table, cn } from '@heroui/react'
 import ArrowDownToSquareIcon from '@gravity-ui/icons/esm/ArrowDownToSquare.js'
 
 import { AppIcon } from '../../lib/icons'
 import { useEditorStore } from '../../store'
 import { MATERIAL_PRESETS, type MaterialPreset } from '../../lib/materialPresets'
-import { computeCutPlan } from '../../lib/jobs'
+import { ancestorMatrix, computeCutPlan } from '../../lib/jobs'
 import { getNodePreviewBounds, type Bounds } from '../../lib/nodeBounds'
 import { exportToSVG } from '../../lib/svgExport'
 import { exportPreparePdf } from '../../lib/exportPreparePdf'
 import { LayoutDiagram } from './LayoutDiagram'
+import { JobPreview } from '../LayerTree'
 
 interface PreparePanelProps {
   projectName: string
   materialPreset: MaterialPreset
+  exportOnly?: boolean
 }
 
 function unionBounds(a: Bounds | null, b: Bounds | null): Bounds | null {
@@ -33,6 +36,31 @@ function fmt(value: number | null | undefined, unit: string = 'mm', digits = 1):
   return `${f} ${unit}`
 }
 
+function SortableColumnHeader({
+  children,
+  sortDirection,
+}: {
+  children: React.ReactNode
+  sortDirection?: 'ascending' | 'descending'
+}) {
+  return (
+    <span className="flex items-center justify-between gap-2">
+      {children}
+      {!!sortDirection && (
+        <span
+          className={cn(
+            'text-[10px] transition-transform duration-100 ease-out',
+            sortDirection === 'descending' ? 'rotate-180' : '',
+          )}
+          aria-hidden
+        >
+          ▲
+        </span>
+      )}
+    </span>
+  )
+}
+
 function extractDesignInnerSvg(svgText: string): string {
   // exportToSVG wraps all content in <g transform="translate(-artX -artY)">.
   // We grab that <g> node's outerHTML so its transform is preserved, then
@@ -43,18 +71,19 @@ function extractDesignInnerSvg(svgText: string): string {
   return g ? g.outerHTML : ''
 }
 
-export function PreparePanel({ projectName, materialPreset }: PreparePanelProps) {
+export function PreparePanel({ projectName, materialPreset, exportOnly = false }: PreparePanelProps) {
   const artboard = useEditorStore((s) => s.artboard)
   const nodesById = useEditorStore((s) => s.nodesById)
   const rootIds = useEditorStore((s) => s.rootIds)
   const machiningSettings = useEditorStore((s) => s.machiningSettings)
+  const prepareExportCutNumbers = useEditorStore((s) => s.prepareExportCutNumbers)
 
   const rootRef = useRef<HTMLDivElement>(null)
   const [isExporting, setIsExporting] = useState(false)
 
   const preset = MATERIAL_PRESETS.find((p) => p.id === materialPreset) ?? MATERIAL_PRESETS[0]
 
-  const { jobs, designBounds, designInnerSvg } = useMemo(() => {
+  const { jobs, designBounds, designInnerSvg, cutBadges } = useMemo(() => {
     const plan = computeCutPlan(rootIds, nodesById, machiningSettings, artboard)
 
     let bounds: Bounds | null = null
@@ -68,7 +97,20 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
     const svgText = exportToSVG(nodesById, rootIds, artboard)
     const inner = extractDesignInnerSvg(svgText)
 
-    return { jobs: plan.jobs, designBounds: bounds, designInnerSvg: inner }
+    const badges: { nodeId: string; x: number; y: number; jobIndex: number; step: number }[] = []
+    let running = 0
+    plan.jobs.forEach((job, jobIndex) => {
+      for (const nodeId of job.nodeIds) {
+        const node = nodesById[nodeId]
+        if (!node) continue
+        const nb = getNodePreviewBounds(node, nodesById, ancestorMatrix(node, nodesById))
+        if (!nb) continue
+        running += 1
+        badges.push({ nodeId, x: nb.minX, y: nb.minY, jobIndex, step: running })
+      }
+    })
+
+    return { jobs: plan.jobs, designBounds: bounds, designInnerSvg: inner, cutBadges: badges }
   }, [artboard, machiningSettings, nodesById, rootIds])
 
   const generatedAt = useMemo(() => new Date().toLocaleString(), [])
@@ -97,11 +139,13 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
   const designH = designBounds ? designBounds.maxY - designBounds.minY : 0
 
   return (
-    <div className="h-full w-full overflow-auto bg-neutral-200 px-6 py-6">
-      <div className="mx-auto flex max-w-5xl items-center justify-between pb-4">
+    <div className={exportOnly ? "" : "h-full w-full overflow-auto bg-neutral-200 px-6 py-6"}>
+      <div className={exportOnly ? "flex justify-end" : "mx-auto flex max-w-5xl items-center justify-between pb-4"}>
+        {!exportOnly && (
         <div className="text-sm text-neutral-700">
           Review the layout, cut list and offsets before machining. Export as PDF to keep a record.
         </div>
+        )}
         <Button
           className="rounded-full bg-emerald-600 px-4 gap-1.5 text-sm font-medium text-white hover:bg-emerald-500"
           size="sm"
@@ -113,6 +157,7 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
         </Button>
       </div>
 
+      <div className={exportOnly ? "fixed left-[-10000px] top-0 w-[1024px] bg-neutral-200 px-6 py-6" : ""}>
       <div
         ref={rootRef}
         className="mx-auto max-w-5xl space-y-2 rounded-lg bg-white p-4 text-neutral-900 shadow-sm"
@@ -145,6 +190,7 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
               designBounds={designBounds}
               jobs={jobs}
               materialPreset={materialPreset}
+              cutBadges={prepareExportCutNumbers ? cutBadges : null}
             />
           </div>
         </section>
@@ -261,6 +307,228 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
           </div>
         </section>
       </div>
+      </div>
+    </div>
+  )
+}
+
+export function PrepareJobSummary({
+  collapsed = false,
+  onToggle,
+}: {
+  collapsed?: boolean
+  onToggle?: () => void
+} = {}) {
+  const artboard = useEditorStore((s) => s.artboard)
+  const nodesById = useEditorStore((s) => s.nodesById)
+  const rootIds = useEditorStore((s) => s.rootIds)
+  const machiningSettings = useEditorStore((s) => s.machiningSettings)
+  const selectedJobId = useEditorStore((s) => s.selectedJobId)
+  const setSelectedJob = useEditorStore((s) => s.setSelectedJob)
+  const hoveredId = useEditorStore((s) => s.hoveredId)
+  const tableContainerRef = useRef<HTMLDivElement | null>(null)
+  const selectedKeys = useMemo<Selection>(
+    () => (selectedJobId ? new Set([selectedJobId]) : new Set()),
+    [selectedJobId],
+  )
+  const handleSelectionChange = (keys: Selection) => {
+    if (keys === 'all') return
+    const first = keys.values().next().value
+    setSelectedJob(typeof first === 'string' ? first : null)
+  }
+  const [sortDescriptor, setSortDescriptor] = useState<SortDescriptor>({
+    column: 'index',
+    direction: 'ascending',
+  })
+
+  const jobs = useMemo(
+    () => computeCutPlan(rootIds, nodesById, machiningSettings, artboard).jobs,
+    [artboard, machiningSettings, nodesById, rootIds],
+  )
+  const rows = useMemo(
+    () =>
+      jobs.map((job, index) => {
+        const width = job.boundsMm.maxX - job.boundsMm.minX
+        const height = job.boundsMm.maxY - job.boundsMm.minY
+        const sharedAnchor = job.anchorAlignment?.sharedX != null
+          ? `X=${fmt(job.anchorAlignment.sharedX)}`
+          : job.anchorAlignment?.sharedY != null
+            ? `Y=${fmt(artboard.height - job.anchorAlignment.sharedY)}`
+            : null
+        return {
+          id: job.id,
+          index: index + 1,
+          name: job.name,
+          cuts: job.nodeIds.length,
+          anchor: job.pathAnchor,
+          sharedAnchor,
+          x: job.crossOffsetFromArtboardBL.x,
+          y: job.crossOffsetFromArtboardBL.y,
+          width,
+          height,
+        }
+      }),
+    [artboard.height, jobs],
+  )
+  const sortedRows = useMemo(() => {
+    return [...rows].sort((a, b) => {
+      const column = sortDescriptor.column as keyof typeof rows[number]
+      const first = a[column]
+      const second = b[column]
+      const cmp =
+        typeof first === 'number' && typeof second === 'number'
+          ? first - second
+          : String(first ?? '').localeCompare(String(second ?? ''))
+      return sortDescriptor.direction === 'descending' ? -cmp : cmp
+    })
+  }, [rows, sortDescriptor])
+
+  const hoveredJobId = useMemo(() => {
+    if (!hoveredId) return null
+    return jobs.find((job) => job.nodeIds.includes(hoveredId))?.id ?? null
+  }, [hoveredId, jobs])
+
+  useEffect(() => {
+    if (!hoveredJobId || !tableContainerRef.current) return
+    const row = tableContainerRef.current.querySelector<HTMLElement>(
+      `[data-key="${CSS.escape(hoveredJobId)}"]`,
+    )
+    if (row) row.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [hoveredJobId])
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-background text-foreground">
+      <div className="flex shrink-0 items-center justify-between border-b border-border px-5 py-2">
+        <h2 className="text-[13px] font-semibold uppercase tracking-wide text-muted-foreground">
+          Jobs ({jobs.length})
+        </h2>
+        {onToggle ? (
+          <button
+            type="button"
+            className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-[var(--surface-secondary)] hover:text-foreground"
+            onClick={onToggle}
+          >
+            {collapsed ? 'Expand' : 'Collapse'}
+          </button>
+        ) : null}
+      </div>
+      {collapsed ? null : (
+      <div ref={tableContainerRef} className="min-h-0 flex-1 overflow-auto px-5 py-2">
+        {jobs.length === 0 ? (
+          <p className="text-xs text-muted-foreground">No jobs — place geometry on the artboard.</p>
+        ) : (
+          <Table className="h-full">
+            <Table.ScrollContainer>
+              <Table.Content
+                aria-label="Prepare jobs summary"
+                className="min-w-[900px]"
+                selectedKeys={selectedKeys}
+                selectionMode="single"
+                selectionBehavior="replace"
+                sortDescriptor={sortDescriptor}
+                onSelectionChange={handleSelectionChange}
+                onSortChange={setSortDescriptor}
+              >
+                <Table.Header>
+                  <Table.Column allowsSorting isRowHeader id="index">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>#</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column id="preview">
+                    {() => <span aria-hidden />}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="name">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>Name</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="cuts">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>Cuts</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="anchor">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>Anchor</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="x" className="text-end">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>X BL</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="y" className="text-end">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>Y BL</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="width" className="text-end">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>W</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                  <Table.Column allowsSorting id="height" className="text-end">
+                    {({ sortDirection }) => (
+                      <SortableColumnHeader sortDirection={sortDirection}>H</SortableColumnHeader>
+                    )}
+                  </Table.Column>
+                </Table.Header>
+                <Table.Body>
+                  {sortedRows.map((job) => (
+                    <Table.Row
+                      key={job.id}
+                      id={job.id}
+                      className={hoveredJobId === job.id ? 'bg-primary/20' : undefined}
+                    >
+                      <Table.Cell className="font-medium tabular-nums">
+                        <span
+                          className="inline-flex h-5 min-w-[1.5rem] items-center justify-center rounded-full px-1.5 text-[10px] font-semibold"
+                          style={{
+                            backgroundColor: `hsl(${((job.index - 1) * 57) % 360}, 65%, 28%)`,
+                            color: `hsl(${((job.index - 1) * 57) % 360}, 90%, 88%)`,
+                            boxShadow: `0 0 0 1px hsl(${((job.index - 1) * 57) % 360}, 70%, 55%)`,
+                          }}
+                        >
+                          J{job.index}
+                        </span>
+                      </Table.Cell>
+                      <Table.Cell>
+                        {(() => {
+                          const j = jobs.find((entry) => entry.id === job.id)
+                          return j ? <JobPreview job={j} nodesById={nodesById} size={28} /> : null
+                        })()}
+                      </Table.Cell>
+                      <Table.Cell>
+                        <div className="flex flex-col">
+                          <span className="text-xs font-medium">{job.name}</span>
+                          <span className="text-xs text-muted-foreground">{job.id}</span>
+                        </div>
+                      </Table.Cell>
+                      <Table.Cell className="tabular-nums">{job.cuts}</Table.Cell>
+                      <Table.Cell>
+                        <div className="flex items-center gap-2">
+                          <span>{job.anchor}</span>
+                          {job.sharedAnchor ? (
+                            <Chip color="success" size="sm" variant="soft">
+                              {job.sharedAnchor}
+                            </Chip>
+                          ) : null}
+                        </div>
+                      </Table.Cell>
+                      <Table.Cell className="text-end tabular-nums">{fmt(job.x)}</Table.Cell>
+                      <Table.Cell className="text-end tabular-nums">{fmt(job.y)}</Table.Cell>
+                      <Table.Cell className="text-end tabular-nums">{fmt(job.width)}</Table.Cell>
+                      <Table.Cell className="text-end tabular-nums">{fmt(job.height)}</Table.Cell>
+                    </Table.Row>
+                  ))}
+                </Table.Body>
+              </Table.Content>
+            </Table.ScrollContainer>
+          </Table>
+        )}
+      </div>
+      )}
     </div>
   )
 }

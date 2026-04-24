@@ -427,7 +427,7 @@ function reorderLeavesByAnchor(
  *  locally while their containing `<svg>` group carries the import scale and
  *  origin-flip, producing bounds hundreds of mm off from where the art actually
  *  renders. */
-function ancestorMatrix(
+export function ancestorMatrix(
   node: CanvasNode,
   nodesById: Record<string, CanvasNode>,
 ): Matrix {

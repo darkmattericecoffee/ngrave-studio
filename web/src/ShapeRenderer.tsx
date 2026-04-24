@@ -29,6 +29,7 @@ export interface ShapeRendererProps {
   registerNodeRef: (nodeId: string, node: Konva.Node | null) => void
   parentDimmed?: boolean
   interactionBlocked?: boolean
+  disableDrag?: boolean
   showCncOverrides?: boolean
   outlineOnly?: boolean
   hitboxOnly?: boolean
@@ -331,6 +332,7 @@ export const ShapeRenderer = memo(function ShapeRenderer({
   registerNodeRef,
   parentDimmed = false,
   interactionBlocked = false,
+  disableDrag = false,
   showCncOverrides = true,
   outlineOnly = false,
   hitboxOnly = false,
@@ -396,6 +398,7 @@ export const ShapeRenderer = memo(function ShapeRenderer({
   const draggable =
     listening &&
     !interactionBlocked &&
+    !disableDrag &&
     isDirectlyInteractive &&
     node.draggable &&
     !node.locked &&
@@ -537,6 +540,7 @@ export const ShapeRenderer = memo(function ShapeRenderer({
             registerNodeRef={registerNodeRef}
             parentDimmed={isDimmed}
             interactionBlocked={interactionBlocked}
+            disableDrag={disableDrag}
             showCncOverrides={showCncOverrides}
             outlineOnly={outlineOnly}
             parentCncMetadata={mergeCncMetadata(groupNode.cncMetadata, parentCncMetadata)}
@@ -762,6 +766,7 @@ export interface EngravePreviewStackProps {
   toolDiameter: number
   registerNodeRef: (nodeId: string, node: Konva.Node | null) => void
   interactionBlocked?: boolean
+  disableDrag?: boolean
   showCncOverrides?: boolean
   outlineOnly?: boolean
   onNodeDragStart?: (nodeId: string, konvaNode: Konva.Node) => void
@@ -775,6 +780,7 @@ export const EngravePreviewStack = memo(function EngravePreviewStack({
   toolDiameter,
   registerNodeRef,
   interactionBlocked,
+  disableDrag = false,
   showCncOverrides = true,
   outlineOnly = false,
   onNodeDragStart,
@@ -824,6 +830,7 @@ export const EngravePreviewStack = memo(function EngravePreviewStack({
           nodeId={nodeId}
           registerNodeRef={registerNodeRef}
           interactionBlocked={interactionBlocked}
+          disableDrag={disableDrag}
           showCncOverrides={false}
           hitboxOnly={true}
           onNodeDragStart={onNodeDragStart}
@@ -838,6 +845,7 @@ export const EngravePreviewStack = memo(function EngravePreviewStack({
           nodeId={nodeId}
           registerNodeRef={registerNodeRef}
           interactionBlocked={interactionBlocked}
+          disableDrag={disableDrag}
           showCncOverrides={showCncOverrides}
           outlineOnly={outlineOnly}
           onNodeDragStart={onNodeDragStart}

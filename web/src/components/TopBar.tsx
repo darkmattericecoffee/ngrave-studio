@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Button, ButtonGroup, Dropdown, Label, ProgressBar, ProgressCircle } from '@heroui/react'
 import type { JobProgress, GenerateJobResponse } from '@svg2gcode/bridge'
 import ArrowDownToSquareIcon from '@gravity-ui/icons/esm/ArrowDownToSquare.js'
@@ -20,6 +20,7 @@ interface TopBarProps {
   gcodeResult?: GenerateJobResponse | null
   gcodeError?: string | null
   onDismissGcode?: () => void
+  prepareExportControl?: ReactNode
 }
 
 const GCODE_TOAST_AUTO_DISMISS_MS = 5000
@@ -76,6 +77,7 @@ export function TopBar({
   gcodeResult,
   gcodeError,
   onDismissGcode,
+  prepareExportControl,
 }: TopBarProps) {
   const [dismissedGcodeResult, setDismissedGcodeResult] = useState<GenerateJobResponse | null>(null)
   const [dismissCountdown, setDismissCountdown] = useState<{
@@ -124,7 +126,7 @@ export function TopBar({
       <div className="pointer-events-auto inline-flex flex-col rounded-[1.75rem] border border-white/10 bg-[rgba(19,19,23,0.9)] px-3 py-3 text-white shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl transition-all duration-300">
         <div className="flex min-h-10 items-center gap-3">
 
-          {/* Tabs: Design / Preview / 3D CNC */}
+          {/* Main workspace tabs */}
           <div className="flex h-10 items-center rounded-[1.2rem] bg-[#27272A] px-1">
             <button
               type="button"
@@ -140,6 +142,21 @@ export function TopBar({
             <button
               type="button"
               className={`flex h-8 min-w-[80px] items-center justify-center rounded-[0.9rem] px-5 text-sm font-medium transition ${
+                viewMode === 'prepare'
+                  ? 'bg-[#3f3f46] text-white'
+                  : 'text-white/40 hover:text-white/60'
+              }`}
+              onClick={() => onViewModeChange('prepare')}
+            >
+              Prepare
+            </button>
+          </div>
+
+          {/* Generated preview tabs */}
+          <div className="flex h-10 items-center rounded-[1.2rem] bg-[#27272A] px-1">
+            <button
+              type="button"
+              className={`flex h-8 min-w-[68px] items-center justify-center rounded-[0.9rem] px-4 text-sm font-medium transition ${
                 viewMode === 'preview2d'
                   ? 'bg-[#3f3f46] text-white'
                   : 'text-white/40 hover:text-white/60'
@@ -150,7 +167,7 @@ export function TopBar({
             </button>
             <button
               type="button"
-              className={`flex h-8 min-w-[80px] items-center justify-center rounded-[0.9rem] px-5 text-sm font-medium transition ${
+              className={`flex h-8 min-w-[68px] items-center justify-center rounded-[0.9rem] px-4 text-sm font-medium transition ${
                 viewMode === 'preview3d'
                   ? 'bg-[#3f3f46] text-white'
                   : hasGcodeResult
@@ -164,17 +181,6 @@ export function TopBar({
               }}
             >
               3D
-            </button>
-            <button
-              type="button"
-              className={`flex h-8 min-w-[80px] items-center justify-center rounded-[0.9rem] px-5 text-sm font-medium transition ${
-                viewMode === 'prepare'
-                  ? 'bg-[#3f3f46] text-white'
-                  : 'text-white/40 hover:text-white/60'
-              }`}
-              onClick={() => onViewModeChange('prepare')}
-            >
-              Prepare
             </button>
           </div>
 
@@ -225,6 +231,7 @@ export function TopBar({
               </Dropdown.Popover>
             </Dropdown>
           </ButtonGroup>
+          {viewMode === 'prepare' ? prepareExportControl : null}
         </div>
 
         {/* Expandable status area */}

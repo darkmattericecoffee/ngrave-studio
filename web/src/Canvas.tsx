@@ -20,7 +20,7 @@ import {
 import { resizeGeneratorToBounds, supportsGeneratorResizeBack } from './lib/generators'
 import { getNodeSize } from './lib/nodeDimensions'
 import { getNodePreviewBounds, type Bounds } from './lib/nodeBounds'
-import { computeCutPlan, type ComputedJob } from './lib/jobs'
+import { ancestorMatrix, computeCutPlan, manualJobsFromComputed, type ComputedJob } from './lib/jobs'
 import { getBoundsForNodes, getGuides, getLineGuideStops } from './lib/objectSnapping'
 import { getNodeTransformPatch } from './lib/transformUtils'
 import { generateCenterlineForNode } from './lib/centerline'
@@ -48,6 +48,7 @@ interface CanvasProps {
   materialPreset?: MaterialPreset
   onMaterialChange?: (preset: MaterialPreset) => void
   forceEngravePreview?: boolean
+  prepareMode?: boolean
 }
 
 const GUIDELINE_OFFSET = 5
@@ -63,6 +64,7 @@ const EYEDROPPER_CURSOR_HOTSPOT_X = 3
 const EYEDROPPER_CURSOR_HOTSPOT_Y = 16
 const EYEDROPPER_PICK_FLASH_MS = 140
 const IMPORT_FOCUS_PADDING_PX = 96
+const PREPARE_FIT_PADDING_PX = 56
 
 type NodeLiveTransform = { x: number; y: number; rotation: number; scaleX: number; scaleY: number }
 
@@ -365,7 +367,7 @@ function ToolbarTooltip({
   )
 }
 
-export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_MATERIAL, forceEngravePreview = false }: CanvasProps) {
+export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_MATERIAL, forceEngravePreview = false, prepareMode = false }: CanvasProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const [containerSize, setContainerSize] = useState({ width: 800, height: 600 })
 
@@ -428,6 +430,12 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const nodeRefs = useRef(new Map<string, Konva.Node>())
   const centerlinePathRefs = useRef(new Map<string, Konva.Path>())
   const dragStartPositions = useRef<Record<string, { x: number; y: number }>>({})
+  const prepareJobDragRef = useRef<{
+    jobId: string
+    startX: number
+    startY: number
+    positions: Record<string, { x: number; y: number }>
+  } | null>(null)
   const gapDragRef = useRef<
     | { kind: 'grid'; startPointerX: number; startPointerY: number; startGap: number; axis: 'col' | 'row'; nodeId: string }
     | { kind: 'generator'; startPointerX: number; startPointerY: number; startSpacing: number; axis: 'col' | 'row'; nodeId: string; minSpacing: number }
@@ -665,6 +673,31 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
 
     setViewport(nextViewport)
   }
+
+  const fitViewportToArtboard = useCallback((paddingPx = IMPORT_FOCUS_PADDING_PX) => {
+    const availableWidth = Math.max(1, stageSize.width - paddingPx * 2)
+    const availableHeight = Math.max(1, stageSize.height - paddingPx * 2)
+    const fitScale = clampScale(Math.min(
+      MAX_SCALE,
+      availableWidth / Math.max(1, artboardRect.width),
+      availableHeight / Math.max(1, artboardRect.height),
+    ))
+    const center = {
+      x: artboardRect.x + artboardRect.width / 2,
+      y: artboardRect.y + artboardRect.height / 2,
+    }
+
+    setViewport({
+      scale: fitScale,
+      x: stageSize.width / 2 - center.x * fitScale,
+      y: stageSize.height / 2 - center.y * fitScale,
+    })
+  }, [artboardRect.height, artboardRect.width, artboardRect.x, artboardRect.y, setViewport, stageSize.height, stageSize.width])
+
+  useEffect(() => {
+    if (!prepareMode) return
+    fitViewportToArtboard(PREPARE_FIT_PADDING_PX)
+  }, [fitViewportToArtboard, prepareMode])
 
   useEffect(() => {
     if (!importFocusRequest) {
@@ -1003,6 +1036,45 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     dragStartPositions.current = {}
   }, [clearSnapGuides, selectedIds, updateNodeTransform])
 
+  const handlePrepareJobDragStart = useCallback((job: ComputedJob, konvaNode: Konva.Node) => {
+    if (!prepareMode) return
+    const positions: Record<string, { x: number; y: number }> = {}
+    for (const nodeId of job.nodeIds) {
+      const node = nodesById[nodeId]
+      if (node) positions[nodeId] = { x: node.x, y: node.y }
+    }
+    if (Object.keys(positions).length === 0) return
+
+    pushHistory()
+    const state = useEditorStore.getState()
+    if (!state.machiningSettings.manualJobs) {
+      const { jobs } = computeCutPlan(rootIds, nodesById, state.machiningSettings, state.artboard)
+      state.commitManualJobs(manualJobsFromComputed(jobs))
+    }
+    state.setSelectedJob(job.id)
+    prepareJobDragRef.current = {
+      jobId: job.id,
+      startX: konvaNode.x(),
+      startY: konvaNode.y(),
+      positions,
+    }
+  }, [nodesById, prepareMode, pushHistory, rootIds])
+
+  const handlePrepareJobDragMove = useCallback((jobId: string, konvaNode: Konva.Node) => {
+    const drag = prepareJobDragRef.current
+    if (!drag || drag.jobId !== jobId) return
+    const dx = konvaNode.x() - drag.startX
+    const dy = konvaNode.y() - drag.startY
+    for (const [nodeId, start] of Object.entries(drag.positions)) {
+      updateNodeTransform(nodeId, { x: start.x + dx, y: start.y + dy })
+    }
+  }, [updateNodeTransform])
+
+  const handlePrepareJobDragEnd = useCallback((jobId: string, konvaNode: Konva.Node) => {
+    handlePrepareJobDragMove(jobId, konvaNode)
+    prepareJobDragRef.current = null
+  }, [handlePrepareJobDragMove])
+
   const finishMarqueeSelection = (additive: boolean) => {
     const currentMarquee = marqueeRectRef.current
     if (!currentMarquee || currentMarquee.width < 3 || currentMarquee.height < 3) {
@@ -1109,7 +1181,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     if (!marqueeStartRef.current && !interactionBlocked) {
       const pos = stage.getPointerPosition()
       if (pos) {
-        const activeMode = getEffectiveInteractionMode(interactionMode, directSelectionModifierActive)
+        const activeMode = prepareMode
+          ? 'direct'
+          : getEffectiveInteractionMode(interactionMode, directSelectionModifierActive)
 
         if (activeMode === 'direct' || eyedropperMode !== 'off') {
           // In direct selection mode, sample ALL shapes at cursor position
@@ -1509,10 +1583,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
     }
   }, [])
 
-  const effectiveInteractionMode = getEffectiveInteractionMode(
-    interactionMode,
-    directSelectionModifierActive,
-  )
+  const effectiveInteractionMode = prepareMode
+    ? 'direct'
+    : getEffectiveInteractionMode(interactionMode, directSelectionModifierActive)
 
 
   const selectionBoundingRect = (() => {
@@ -1531,6 +1604,12 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   })()
 
   const panelHoveredId = useEditorStore((s) => s.hoveredId)
+  const setStoreHoveredId = useEditorStore((s) => s.setHoveredId)
+  useEffect(() => {
+    if (!prepareMode) return
+    setStoreHoveredId(hoveredNodeId)
+    return () => setStoreHoveredId(null)
+  }, [hoveredNodeId, prepareMode, setStoreHoveredId])
   const hoveredPathAnchor = useEditorStore((s) => s.hoveredPathAnchor)
   const hoveredPathAnchorPreview = useMemo(() => {
     if (!hoveredPathAnchor) return null
@@ -1550,17 +1629,28 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
   const selectedJobId = useEditorStore((s) => s.selectedJobId)
   const setSelectedJob = useEditorStore((s) => s.setSelectedJob)
   const layerPanelView = useEditorStore((s) => s.layerPanelView)
+  const prepareShowCutNumbers = useEditorStore((s) => s.prepareShowCutNumbers)
+  const prepareJobPlayback = useEditorStore((s) => s.prepareJobPlayback)
   const computedJobs = useMemo<ComputedJob[]>(() => {
     if (!jobsEnabled) return []
     // Overlays are editing affordances tied to the Cut Order tab — don't
     // clutter the canvas while the user is on the Layers tab.
-    if (layerPanelView !== 'cutOrder') return []
+    if (!prepareMode && layerPanelView !== 'cutOrder') return []
     const { jobs } = computeCutPlan(rootIds, nodesById, machiningSettings, storeArtboard)
     // Draw overlay only when splitting actually produced multiple jobs —
     // a single job is just "whole file" and the existing anchor preview
     // already covers that case.
-    return jobs.length > 1 ? jobs : []
-  }, [jobsEnabled, layerPanelView, machiningSettings, nodesById, rootIds, storeArtboard])
+    return prepareMode ? jobs : jobs.length > 1 ? jobs : []
+  }, [jobsEnabled, layerPanelView, machiningSettings, nodesById, prepareMode, rootIds, storeArtboard])
+  const designBounds = useMemo(() => {
+    let bounds: Bounds | null = null
+    for (const id of rootIds) {
+      const node = nodesById[id]
+      if (!node) continue
+      bounds = mergeBounds(bounds, getNodePreviewBounds(node, nodesById))
+    }
+    return bounds
+  }, [nodesById, rootIds])
   const outlineSourceIds = useMemo(
     () => [
       ...new Set([
@@ -1634,7 +1724,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
       onDrop={handleLibraryDrop}
     >
       {/* Dot grid background */}
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:32px_32px]" />
+      <div
+        className="pointer-events-none absolute inset-0 bg-[linear-gradient(rgba(255,255,255,0.035)_1px,transparent_1px),linear-gradient(90deg,rgba(255,255,255,0.035)_1px,transparent_1px)] bg-[size:32px_32px]"
+      />
 
       <EditorContextMenu
         isOpen={contextMenu.isOpen}
@@ -1648,41 +1740,69 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
       {/* Bottom floating toolbar */}
       <div className="pointer-events-none absolute inset-x-0 bottom-7 z-20 flex justify-center px-6">
         <div className="pointer-events-auto flex items-center gap-2 rounded-[1.75rem] border border-white/10 bg-[rgba(19,19,23,0.9)] px-4 py-3 text-white shadow-[0_24px_60px_rgba(0,0,0,0.45)] backdrop-blur-2xl">
-          {/* Direct selection toggle */}
-          <ToolbarTooltip label="Direct selection" shortcuts={['D', '⌘ Click']} note="Shift+click multi-selects. Shift+⌘ click picks groups.">
-            <button
-              type="button"
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${effectiveInteractionMode === 'direct' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-              onClick={() => setInteractionMode(interactionMode === 'direct' ? 'group' : 'direct')}
-              title="Direct selection (D)"
-            >
-              <AppIcon icon={Icons.cursor} className="h-5 w-5" />
-            </button>
-          </ToolbarTooltip>
+          {prepareMode ? (
+            <>
+              {/* Direct selection (always on in prepare). */}
+              <ToolbarTooltip label="Direct selection" note="Always on in Prepare">
+                <button
+                  type="button"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-white/[0.14] text-white cursor-default"
+                  aria-pressed
+                  title="Direct selection (always on in Prepare)"
+                >
+                  <AppIcon icon={Icons.cursor} className="h-5 w-5" />
+                </button>
+              </ToolbarTooltip>
+              <ToolbarTooltip label="Pan" shortcuts={['H', 'Space']}>
+                <button
+                  type="button"
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${panToolActive ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+                  onClick={() => setPanToolActive((v) => !v)}
+                  title="Pan (H)"
+                >
+                  <AppIcon icon={Icons.hand} className="h-5 w-5" />
+                </button>
+              </ToolbarTooltip>
+            </>
+          ) : (
+            <>
+              {/* Direct selection toggle */}
+              <ToolbarTooltip label="Direct selection" shortcuts={['D', '⌘ Click']} note="Shift+click multi-selects. Shift+⌘ click picks groups.">
+                <button
+                  type="button"
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${effectiveInteractionMode === 'direct' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+                  onClick={() => setInteractionMode(interactionMode === 'direct' ? 'group' : 'direct')}
+                  title="Direct selection (D)"
+                >
+                  <AppIcon icon={Icons.cursor} className="h-5 w-5" />
+                </button>
+              </ToolbarTooltip>
 
-          {/* Pan tool toggle */}
-          <ToolbarTooltip label="Pan" shortcuts={['H', 'Space']}>
-            <button
-              type="button"
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${panToolActive ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-              onClick={() => setPanToolActive((v) => !v)}
-              title="Pan (H)"
-            >
-              <AppIcon icon={Icons.hand} className="h-5 w-5" />
-            </button>
-          </ToolbarTooltip>
+              {/* Pan tool toggle */}
+              <ToolbarTooltip label="Pan" shortcuts={['H', 'Space']}>
+                <button
+                  type="button"
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${panToolActive ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+                  onClick={() => setPanToolActive((v) => !v)}
+                  title="Pan (H)"
+                >
+                  <AppIcon icon={Icons.hand} className="h-5 w-5" />
+                </button>
+              </ToolbarTooltip>
 
-          {/* Outlines toggle */}
-          <ToolbarTooltip label="Show Depth">
-            <button
-              type="button"
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showOutlines ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
-              onClick={() => setShowOutlines((v) => !v)}
-              title="Show Depth - show colored depth lines"
-            >
-              <AppIcon icon={Icons.textIndent} className="h-5 w-5 rotate-90" />
-            </button>
-          </ToolbarTooltip>
+              {/* Outlines toggle */}
+              <ToolbarTooltip label="Show Depth">
+                <button
+                  type="button"
+                  className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${showOutlines ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'}`}
+                  onClick={() => setShowOutlines((v) => !v)}
+                  title="Show Depth - show colored depth lines"
+                >
+                  <AppIcon icon={Icons.textIndent} className="h-5 w-5 rotate-90" />
+                </button>
+              </ToolbarTooltip>
+            </>
+          )}
 
           {/* Undo / Redo */}
           <div className="mx-1 h-6 w-px bg-white/10" />
@@ -1708,26 +1828,28 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
               <AppIcon icon={Icons.redo} className="h-5 w-5" />
             </button>
           </ToolbarTooltip>
-          <ToolbarTooltip label="Pick Styles" shortcuts={['⌘I']} note="⌘⇧I for depth only">
-            <button
-              type="button"
-              className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${
-                eyedropperMode !== 'off' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'
-              }`}
-              onClick={() => setEyedropperMode(eyedropperMode === 'full' ? 'off' : 'full')}
-              title="Pick Styles (⌘I)"
-            >
-              <img
-                src={PipetteGlyph}
-                alt=""
-                aria-hidden="true"
-                className={`h-4 w-4 select-none object-contain [filter:brightness(0)_invert(1)] ${
-                  eyedropperMode !== 'off' ? 'opacity-100' : 'opacity-75'
+          {prepareMode ? null : (
+            <ToolbarTooltip label="Pick Styles" shortcuts={['⌘I']} note="⌘⇧I for depth only">
+              <button
+                type="button"
+                className={`inline-flex h-8 w-8 items-center justify-center rounded-lg transition ${
+                  eyedropperMode !== 'off' ? 'bg-white/[0.14] text-white' : 'text-white/75 hover:text-white'
                 }`}
-                draggable={false}
-              />
-            </button>
-          </ToolbarTooltip>
+                onClick={() => setEyedropperMode(eyedropperMode === 'full' ? 'off' : 'full')}
+                title="Pick Styles (⌘I)"
+              >
+                <img
+                  src={PipetteGlyph}
+                  alt=""
+                  aria-hidden="true"
+                  className={`h-4 w-4 select-none object-contain [filter:brightness(0)_invert(1)] ${
+                    eyedropperMode !== 'off' ? 'opacity-100' : 'opacity-75'
+                  }`}
+                  draggable={false}
+                />
+              </button>
+            </ToolbarTooltip>
+          )}
 
           {/* Zoom controls */}
           <div className="ml-2 flex items-center gap-3 rounded-[1.2rem] bg-white/[0.05] px-4 py-2">
@@ -1795,7 +1917,8 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
             className="min-w-12 px-3 font-medium uppercase tracking-[0.08em] text-white/80 hover:text-white"
             onClick={() => {
               if (isZoomEditing) cancelZoomEdit()
-              resetViewport()
+              if (prepareMode) fitViewportToArtboard(PREPARE_FIT_PADDING_PX)
+              else resetViewport()
             }}
           >
             Fit
@@ -1890,6 +2013,17 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
               shadowOffsetY={8}
             />
 
+            {prepareMode ? (
+              <Rect
+                x={0}
+                y={0}
+                width={artboardRect.width}
+                height={artboardRect.height}
+                fill="rgba(0,0,0,0.35)"
+                listening={false}
+              />
+            ) : null}
+
             {effectiveFocusGroupId && focusScopeContainerId ? (
               <Rect
                 name="canvas-empty focus-overlay"
@@ -1900,6 +2034,142 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                 fill="rgba(20, 14, 9, 0.35)"
                 listening={false}
               />
+            ) : null}
+
+            {prepareMode && designBounds ? (
+              <Group listening={false}>
+                {(() => {
+                  const dimStroke = '#d1d5db'
+                  const dimText = '#ffffff'
+                  const dimTextStroke = '#000000'
+                  const dimTextStrokeWidth = 3 / viewport.scale
+                  const tick = 5 / viewport.scale
+                  const matTopY = -18 / viewport.scale
+                  const matRightX = storeArtboard.width + 18 / viewport.scale
+                  const designTopY = designBounds.minY - 10 / viewport.scale
+                  const designRightX = designBounds.maxX + 10 / viewport.scale
+                  const designMidY = designBounds.minY + (designBounds.maxY - designBounds.minY) / 2
+                  const designOffsetY = storeArtboard.height - designBounds.maxY
+                  const designOffsetDimY = storeArtboard.height + 10 / viewport.scale
+                  const designOffsetDimX = -10 / viewport.scale
+                  return (
+                    <>
+                      <Line
+                        points={[0, matTopY, storeArtboard.width, matTopY]}
+                        stroke={dimStroke}
+                        strokeWidth={0.8 / viewport.scale}
+                      />
+                      <Line points={[0, matTopY - tick, 0, matTopY + tick]} stroke={dimStroke} strokeWidth={0.8 / viewport.scale} />
+                      <Line points={[storeArtboard.width, matTopY - tick, storeArtboard.width, matTopY + tick]} stroke={dimStroke} strokeWidth={0.8 / viewport.scale} />
+                      <Text
+                        x={0}
+                        y={matTopY - 15 / viewport.scale}
+                        width={storeArtboard.width}
+                        text={`W ${storeArtboard.width.toFixed(0)} mm`}
+                        fontSize={11 / viewport.scale}
+                        fill={dimText}
+                        stroke={dimTextStroke}
+                        strokeWidth={dimTextStrokeWidth}
+                        fillAfterStrokeEnabled
+                        align="center"
+                      />
+                      <Line
+                        points={[matRightX, 0, matRightX, storeArtboard.height]}
+                        stroke={dimStroke}
+                        strokeWidth={0.8 / viewport.scale}
+                      />
+                      <Line points={[matRightX - tick, 0, matRightX + tick, 0]} stroke={dimStroke} strokeWidth={0.8 / viewport.scale} />
+                      <Line points={[matRightX - tick, storeArtboard.height, matRightX + tick, storeArtboard.height]} stroke={dimStroke} strokeWidth={0.8 / viewport.scale} />
+                      <Text
+                        x={matRightX + 4 / viewport.scale}
+                        y={2 / viewport.scale}
+                        text={`H ${storeArtboard.height.toFixed(0)} mm`}
+                        fontSize={11 / viewport.scale}
+                        fill={dimText}
+                        stroke={dimTextStroke}
+                        strokeWidth={dimTextStrokeWidth}
+                        fillAfterStrokeEnabled
+                      />
+                      <Line
+                        points={[designBounds.minX, designTopY, designBounds.maxX, designTopY]}
+                        stroke={dimStroke}
+                        strokeWidth={0.7 / viewport.scale}
+                      />
+                      <Line points={[designBounds.minX, designTopY - tick, designBounds.minX, designTopY + tick]} stroke={dimStroke} strokeWidth={0.7 / viewport.scale} />
+                      <Line points={[designBounds.maxX, designTopY - tick, designBounds.maxX, designTopY + tick]} stroke={dimStroke} strokeWidth={0.7 / viewport.scale} />
+                      <Text
+                        x={designBounds.minX}
+                        y={designTopY - 15 / viewport.scale}
+                        width={designBounds.maxX - designBounds.minX}
+                        text={`Design W ${(designBounds.maxX - designBounds.minX).toFixed(1)} mm`}
+                        fontSize={11 / viewport.scale}
+                        fill={dimText}
+                        stroke={dimTextStroke}
+                        strokeWidth={dimTextStrokeWidth}
+                        fillAfterStrokeEnabled
+                        align="center"
+                      />
+                      <Line
+                        points={[designRightX, designBounds.minY, designRightX, designBounds.maxY]}
+                        stroke={dimStroke}
+                        strokeWidth={0.7 / viewport.scale}
+                      />
+                      <Line points={[designRightX - tick, designBounds.minY, designRightX + tick, designBounds.minY]} stroke={dimStroke} strokeWidth={0.7 / viewport.scale} />
+                      <Line points={[designRightX - tick, designBounds.maxY, designRightX + tick, designBounds.maxY]} stroke={dimStroke} strokeWidth={0.7 / viewport.scale} />
+                      <Text
+                        x={designRightX + 4 / viewport.scale}
+                        y={designMidY - 6 / viewport.scale}
+                        text={`Design H ${(designBounds.maxY - designBounds.minY).toFixed(1)} mm`}
+                        fontSize={11 / viewport.scale}
+                        fill={dimText}
+                        stroke={dimTextStroke}
+                        strokeWidth={dimTextStrokeWidth}
+                        fillAfterStrokeEnabled
+                      />
+                      <Line
+                        points={[0, designOffsetDimY, designBounds.minX, designOffsetDimY]}
+                        stroke={dimStroke}
+                        strokeWidth={0.7 / viewport.scale}
+                      />
+                      <Text
+                        x={Math.max(0, designBounds.minX / 2 - 22 / viewport.scale)}
+                        y={designOffsetDimY + 4 / viewport.scale}
+                        text={`X ${designBounds.minX.toFixed(1)} mm`}
+                        fontSize={10 / viewport.scale}
+                        fill={dimText}
+                        stroke={dimTextStroke}
+                        strokeWidth={dimTextStrokeWidth}
+                        fillAfterStrokeEnabled
+                      />
+                      <Line
+                        points={[designOffsetDimX, designBounds.maxY, designOffsetDimX, storeArtboard.height]}
+                        stroke={dimStroke}
+                        strokeWidth={0.7 / viewport.scale}
+                      />
+                      <Text
+                        x={designOffsetDimX - 48 / viewport.scale}
+                        y={designBounds.maxY + Math.max(0, designOffsetY / 2 - 6 / viewport.scale)}
+                        text={`Y ${designOffsetY.toFixed(1)} mm`}
+                        fontSize={10 / viewport.scale}
+                        fill={dimText}
+                        stroke={dimTextStroke}
+                        strokeWidth={dimTextStrokeWidth}
+                        fillAfterStrokeEnabled
+                      />
+                    </>
+                  )
+                })()}
+                <Rect
+                  x={designBounds.minX}
+                  y={designBounds.minY}
+                  width={designBounds.maxX - designBounds.minX}
+                  height={designBounds.maxY - designBounds.minY}
+                  fill="rgba(220,38,38,0.025)"
+                  stroke="#ef4444"
+                  strokeWidth={0.8 / viewport.scale}
+                  dash={[4 / viewport.scale, 3 / viewport.scale]}
+                />
+              </Group>
             ) : null}
 
             {/* Per-job fill. Drawn BEFORE the shape stack so shapes sit above
@@ -1920,7 +2190,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                       width={boundsMm.maxX - boundsMm.minX}
                       height={boundsMm.maxY - boundsMm.minY}
                       fill={fillColor}
-                      opacity={active ? 0.18 : 0.08}
+                      opacity={active ? 0.32 : 0.08}
+                      stroke={active ? fillColor : undefined}
+                      strokeWidth={active ? 1.2 / viewport.scale : 0}
                       listening={effectiveInteractionMode !== 'direct'}
                       onClick={(e) => {
                         e.cancelBubble = true
@@ -1943,8 +2215,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                   toolDiameter={toolDiameter}
                   registerNodeRef={registerNodeRef}
                   interactionBlocked={interactionBlocked}
-                  showCncOverrides={showOutlines}
-                  outlineOnly={showOutlines}
+                  disableDrag={prepareMode}
+                  showCncOverrides={prepareMode || showOutlines}
+                  outlineOnly={!prepareMode && showOutlines}
                   onNodeDragStart={handleNodeDragStart}
                   onNodeDragMove={handleNodeDragMove}
                   onNodeDragEnd={handleNodeDragEnd}
@@ -1960,8 +2233,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                       nodeId={nodeId}
                       registerNodeRef={registerNodeRef}
                       interactionBlocked={interactionBlocked}
-                      showCncOverrides={showOutlines}
-                      outlineOnly={showOutlines}
+                      disableDrag={prepareMode}
+                      showCncOverrides={prepareMode || showOutlines}
+                      outlineOnly={!prepareMode && showOutlines}
                       onNodeDragStart={handleNodeDragStart}
                       onNodeDragMove={handleNodeDragMove}
                       onNodeDragEnd={handleNodeDragEnd}
@@ -1981,14 +2255,15 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                       copies.push(
                         <ShapeRenderer
                           key={`${nodeId}-0-0`}
-                          nodeId={nodeId}
-                          registerNodeRef={registerNodeRef}
-                          interactionBlocked={interactionBlocked}
-                          showCncOverrides={showOutlines}
-                          outlineOnly={showOutlines}
-                          onNodeDragStart={handleNodeDragStart}
-                          onNodeDragMove={handleNodeDragMove}
-                          onNodeDragEnd={handleNodeDragEnd}
+                            nodeId={nodeId}
+                            registerNodeRef={registerNodeRef}
+                            interactionBlocked={interactionBlocked}
+                            disableDrag={prepareMode}
+                            showCncOverrides={prepareMode || showOutlines}
+                            outlineOnly={!prepareMode && showOutlines}
+                            onNodeDragStart={handleNodeDragStart}
+                            onNodeDragMove={handleNodeDragMove}
+                            onNodeDragEnd={handleNodeDragEnd}
                         />
                       )
                     } else {
@@ -1998,8 +2273,8 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                             nodeId={nodeId}
                             registerNodeRef={noopRegisterNodeRef}
                             interactionBlocked
-                            showCncOverrides={showOutlines}
-                            outlineOnly={showOutlines}
+                            showCncOverrides={prepareMode || showOutlines}
+                            outlineOnly={!prepareMode && showOutlines}
                           />
                         </Group>
                       )
@@ -2008,6 +2283,96 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                 }
                 return <React.Fragment key={nodeId}>{copies}</React.Fragment>
               })}
+
+            {prepareMode && prepareShowCutNumbers && computedJobs.length > 0 ? (() => {
+              const badgeRadius = 10 / viewport.scale
+              const badgeFontSize = 11 / viewport.scale
+              const badgeStroke = 1.5 / viewport.scale
+              const isPlaying = prepareJobPlayback.isPlaying
+              const currentStep = prepareJobPlayback.currentJobIndex
+              let runningIndex = 0
+              const badges: React.ReactNode[] = []
+              for (let jobIndex = 0; jobIndex < computedJobs.length; jobIndex++) {
+                const job = computedJobs[jobIndex]
+                const hue = (jobIndex * 57) % 360
+                const badgeBg = `hsl(${hue}, 65%, 28%)`
+                const badgeStrokeColor = `hsl(${hue}, 70%, 55%)`
+                const badgeTextColor = `hsl(${hue}, 90%, 88%)`
+                for (const nodeId of job.nodeIds) {
+                  const node = nodesById[nodeId]
+                  if (!node) continue
+                  const nb = getNodePreviewBounds(node, nodesById, ancestorMatrix(node, nodesById))
+                  if (!nb) continue
+                  const stepIndex = runningIndex
+                  runningIndex += 1
+                  const cx = nb.minX
+                  const cy = nb.minY
+                  const dimmed = isPlaying && stepIndex > currentStep
+                  badges.push(
+                    <Group
+                      key={`cut-num-${nodeId}`}
+                      x={cx}
+                      y={cy}
+                      listening={false}
+                      opacity={dimmed ? 0.4 : 1}
+                    >
+                      <Circle
+                        radius={badgeRadius}
+                        fill={badgeBg}
+                        stroke={badgeStrokeColor}
+                        strokeWidth={badgeStroke}
+                      />
+                      <Text
+                        x={-badgeRadius}
+                        y={-badgeRadius}
+                        width={badgeRadius * 2}
+                        height={badgeRadius * 2}
+                        text={String(stepIndex + 1)}
+                        fontSize={badgeFontSize}
+                        fontStyle="bold"
+                        fill={badgeTextColor}
+                        align="center"
+                        verticalAlign="middle"
+                      />
+                    </Group>,
+                  )
+                }
+              }
+              return <Group listening={false}>{badges}</Group>
+            })() : null}
+
+            {prepareMode && computedJobs.length > 1 ? (() => {
+              const sharedXs = new Set<number>()
+              const sharedYs = new Set<number>()
+              for (const job of computedJobs) {
+                if (job.anchorAlignment?.sharedX != null) sharedXs.add(job.anchorAlignment.sharedX)
+                if (job.anchorAlignment?.sharedY != null) sharedYs.add(job.anchorAlignment.sharedY)
+              }
+              return (
+                <Group listening={false}>
+                  {[...sharedXs].map((x) => (
+                    <Line
+                      key={`prepare-shared-x-${x}`}
+                      points={[x, 0, x, storeArtboard.height]}
+                      stroke="#10b981"
+                      strokeWidth={0.8 / viewport.scale}
+                      dash={[5 / viewport.scale, 4 / viewport.scale]}
+                      opacity={0.65}
+                    />
+                  ))}
+                  {[...sharedYs].map((y) => (
+                    <Line
+                      key={`prepare-shared-y-${y}`}
+                      points={[0, y, storeArtboard.width, y]}
+                      stroke="#10b981"
+                      strokeWidth={0.8 / viewport.scale}
+                      dash={[5 / viewport.scale, 4 / viewport.scale]}
+                      opacity={0.65}
+                    />
+                  ))}
+                </Group>
+              )
+            })() : null}
 
             {centerlineOverlayNodes}
 
@@ -2018,7 +2383,10 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                 is a simple deterministic hue so colour-coding matches 3D
                 preview badges. */}
             {computedJobs.length > 1
-              ? computedJobs.map((job, jobIndex) => {
+              ? (() => {
+                const xSeen = new Set<string>()
+                const ySeen = new Set<string>()
+                return computedJobs.map((job, jobIndex) => {
                   const { boundsMm, anchorPointMm } = job
                   const hue = (jobIndex * 57) % 360
                   const strokeColor = `hsl(${hue}, 75%, 55%)`
@@ -2027,9 +2395,30 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                   const active = selectedJobId === job.id
                   const artboardLeft = 0
                   const artboardBottom = storeArtboard.height
+                  const measureColor = `hsl(${hue}, 70%, 42%)`
+                  const jobLabelColor = `hsl(${hue}, 70%, 28%)`
+                  const pillFontSize = 10 / viewport.scale
+                  const pillHeight = 16 / viewport.scale
+                  const pillPaddingX = 5 / viewport.scale
+                  const pillRadius = 2 / viewport.scale
+                  const offsetGap = 12 / viewport.scale
+                  const xLabel = `X ${job.crossOffsetFromArtboardBL.x.toFixed(1)} mm`
+                  const yLabel = `Y ${job.crossOffsetFromArtboardBL.y.toFixed(1)} mm`
+                  const showXOffsetPill = !xSeen.has(anchorPointMm.x.toFixed(3))
+                  const showYOffsetPill = !ySeen.has(anchorPointMm.y.toFixed(3))
+                  xSeen.add(anchorPointMm.x.toFixed(3))
+                  ySeen.add(anchorPointMm.y.toFixed(3))
+                  const xPillWidth = Math.max(46 / viewport.scale, xLabel.length * pillFontSize * 0.58 + pillPaddingX * 2)
+                  const yPillWidth = Math.max(46 / viewport.scale, yLabel.length * pillFontSize * 0.58 + pillPaddingX * 2)
+                  const xPillX = anchorPointMm.x - xPillWidth / 2
+                  const xPillY = artboardBottom + offsetGap
+                  const yPillX = artboardLeft - yPillWidth - offsetGap
+                  const yPillY = anchorPointMm.y - pillHeight / 2
                   return (
                     <Group key={`job-overlay-${job.id}`}>
-                      {/* Clickable border — stroke-only hit so shapes below stay reachable. */}
+                      {/* Border — in prepare mode we let shape hovers drive
+                          selection via the panel lists, so the border is
+                          decorative (listening=false). */}
                       <Rect
                         x={boundsMm.minX}
                         y={boundsMm.minY}
@@ -2038,21 +2427,24 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                         stroke={strokeColor}
                         strokeWidth={(active ? 1.8 : 0.9) / viewport.scale}
                         opacity={0.5}
-                        hitStrokeWidth={Math.max(8 / viewport.scale, 6)}
-                        hitFunc={(ctx, shape) => {
-                          const origFillShape = ctx.fillShape
-                          ctx.fillShape = () => {}
-                          shape._sceneFunc(ctx)
-                          ctx.fillShape = origFillShape
-                        }}
-                        onClick={(e) => {
-                          e.cancelBubble = true
-                          setSelectedJob(active ? null : job.id)
-                        }}
-                        onTap={(e) => {
-                          e.cancelBubble = true
-                          setSelectedJob(active ? null : job.id)
-                        }}
+                        listening={!prepareMode}
+                        hitStrokeWidth={prepareMode ? 0 : Math.max(8 / viewport.scale, 6)}
+                        onClick={
+                          prepareMode
+                            ? undefined
+                            : (e) => {
+                                e.cancelBubble = true
+                                setSelectedJob(active ? null : job.id)
+                              }
+                        }
+                        onTap={
+                          prepareMode
+                            ? undefined
+                            : (e) => {
+                                e.cancelBubble = true
+                                setSelectedJob(active ? null : job.id)
+                              }
+                        }
                       />
                       {/* Non-interactive guides/labels — never intercept clicks. */}
                       <Group listening={false}>
@@ -2064,10 +2456,23 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                             anchorPointMm.x,
                             anchorPointMm.y,
                           ]}
-                          stroke={strokeColor}
+                          stroke={measureColor}
                           strokeWidth={strokeWidth}
                           dash={[3 / viewport.scale, 3 / viewport.scale]}
                         />
+                        {showXOffsetPill ? (
+                          <Line
+                            points={[
+                              anchorPointMm.x,
+                              anchorPointMm.y,
+                            anchorPointMm.x,
+                            xPillY,
+                          ]}
+                            stroke={measureColor}
+                            strokeWidth={strokeWidth}
+                            opacity={0.85}
+                          />
+                        ) : null}
                         {/* Offset guide — vertical, crosshair → artboard bottom edge. */}
                         <Line
                           points={[
@@ -2076,10 +2481,23 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                             anchorPointMm.x,
                             artboardBottom,
                           ]}
-                          stroke={strokeColor}
+                          stroke={measureColor}
                           strokeWidth={strokeWidth}
                           dash={[3 / viewport.scale, 3 / viewport.scale]}
                         />
+                        {showYOffsetPill ? (
+                          <Line
+                            points={[
+                              anchorPointMm.x,
+                              anchorPointMm.y,
+                            yPillX + yPillWidth,
+                            anchorPointMm.y,
+                          ]}
+                            stroke={measureColor}
+                            strokeWidth={strokeWidth}
+                            opacity={0.85}
+                          />
+                        ) : null}
                         {/* Crosshair at anchor. */}
                         <Line
                           points={[
@@ -2088,7 +2506,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                             anchorPointMm.x + arm,
                             anchorPointMm.y,
                           ]}
-                          stroke={strokeColor}
+                          stroke={measureColor}
                           strokeWidth={strokeWidth * 1.2}
                           lineCap="round"
                         />
@@ -2099,7 +2517,7 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                             anchorPointMm.x,
                             anchorPointMm.y + arm,
                           ]}
-                          stroke={strokeColor}
+                          stroke={measureColor}
                           strokeWidth={strokeWidth * 1.2}
                           lineCap="round"
                         />
@@ -2108,27 +2526,62 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
                           y={anchorPointMm.y - arm - 14 / viewport.scale}
                           text={`J${jobIndex + 1}`}
                           fontSize={11 / viewport.scale}
-                          fill={strokeColor}
+                          fill={jobLabelColor}
                           fontStyle="bold"
                         />
-                        <Text
-                          x={artboardLeft + 2 / viewport.scale}
-                          y={anchorPointMm.y - 14 / viewport.scale}
-                          text={`${job.crossOffsetFromArtboardBL.x.toFixed(1)} mm`}
-                          fontSize={10 / viewport.scale}
-                          fill={strokeColor}
-                        />
-                        <Text
-                          x={anchorPointMm.x + 4 / viewport.scale}
-                          y={artboardBottom - 14 / viewport.scale}
-                          text={`${job.crossOffsetFromArtboardBL.y.toFixed(1)} mm`}
-                          fontSize={10 / viewport.scale}
-                          fill={strokeColor}
-                        />
+                        {showXOffsetPill ? (
+                        <Group>
+                          <Rect
+                            x={xPillX}
+                            y={xPillY}
+                            width={xPillWidth}
+                            height={pillHeight}
+                            cornerRadius={pillRadius}
+                            fill={measureColor}
+                          />
+                          <Text
+                            x={xPillX}
+                            y={xPillY}
+                            width={xPillWidth}
+                            height={pillHeight}
+                            text={xLabel}
+                            fontSize={pillFontSize}
+                            fill="#ffffff"
+                            fontStyle="bold"
+                            align="center"
+                            verticalAlign="middle"
+                          />
+                        </Group>
+                        ) : null}
+                        {showYOffsetPill ? (
+                        <Group>
+                          <Rect
+                            x={yPillX}
+                            y={yPillY}
+                            width={yPillWidth}
+                            height={pillHeight}
+                            cornerRadius={pillRadius}
+                            fill={measureColor}
+                          />
+                          <Text
+                            x={yPillX}
+                            y={yPillY}
+                            width={yPillWidth}
+                            height={pillHeight}
+                            text={yLabel}
+                            fontSize={pillFontSize}
+                            fill="#ffffff"
+                            fontStyle="bold"
+                            align="center"
+                            verticalAlign="middle"
+                          />
+                        </Group>
+                        ) : null}
                       </Group>
                     </Group>
                   )
                 })
+              })()
               : null}
 
             {hoveredPathAnchorPreview ? (() => {
@@ -2347,7 +2800,9 @@ export function Canvas({ allowStageSelection = false, materialPreset = DEFAULT_M
 
           <Transformer
             ref={transformerRef}
-            rotateEnabled={!selectedStage}
+            visible={!prepareMode}
+            resizeEnabled={!prepareMode}
+            rotateEnabled={!selectedStage && !prepareMode}
             flipEnabled={false}
             boundBoxFunc={(oldBox, newBox) => {
               const minSize =

@@ -194,6 +194,18 @@ export interface EditorStore {
   setSceneReady: (ready: boolean) => void
   initPreview: (result: import('@svg2gcode/bridge').GenerateJobResponse) => Promise<void>
   clearPreview: () => void
+
+  // Prepare tab UI state
+  prepareShowCutNumbers: boolean
+  setPrepareShowCutNumbers: (show: boolean) => void
+  prepareExportCutNumbers: boolean
+  setPrepareExportCutNumbers: (show: boolean) => void
+  prepareJobPlayback: { isPlaying: boolean; currentJobIndex: number; rate: number; loop: boolean }
+  toggleJobPlayback: () => void
+  setJobPlaybackPlaying: (playing: boolean) => void
+  setCurrentJobIndex: (index: number) => void
+  setJobPlaybackRate: (rate: number) => void
+  setJobPlaybackLoop: (loop: boolean) => void
 }
 
 function generateId(): string {
@@ -1821,6 +1833,7 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
   setViewMode: (mode) => {
     set((state) => ({
       preview: { ...state.preview, viewMode: mode, isPlaying: false },
+      prepareJobPlayback: { ...state.prepareJobPlayback, isPlaying: false },
     }))
   },
   setCameraType: (type) => {
@@ -1999,6 +2012,40 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
         playbackDistance: 0,
         isPlaying: false,
       },
+    }))
+  },
+
+  prepareShowCutNumbers: true,
+  setPrepareShowCutNumbers: (show) => set({ prepareShowCutNumbers: show }),
+  prepareExportCutNumbers: true,
+  setPrepareExportCutNumbers: (show) => set({ prepareExportCutNumbers: show }),
+  prepareJobPlayback: { isPlaying: false, currentJobIndex: 0, rate: 1, loop: false },
+  toggleJobPlayback: () => {
+    set((state) => ({
+      prepareJobPlayback: {
+        ...state.prepareJobPlayback,
+        isPlaying: !state.prepareJobPlayback.isPlaying,
+      },
+    }))
+  },
+  setJobPlaybackPlaying: (playing) => {
+    set((state) => ({
+      prepareJobPlayback: { ...state.prepareJobPlayback, isPlaying: playing },
+    }))
+  },
+  setCurrentJobIndex: (index) => {
+    set((state) => ({
+      prepareJobPlayback: { ...state.prepareJobPlayback, currentJobIndex: index },
+    }))
+  },
+  setJobPlaybackRate: (rate) => {
+    set((state) => ({
+      prepareJobPlayback: { ...state.prepareJobPlayback, rate },
+    }))
+  },
+  setJobPlaybackLoop: (loop) => {
+    set((state) => ({
+      prepareJobPlayback: { ...state.prepareJobPlayback, loop },
     }))
   },
 }))

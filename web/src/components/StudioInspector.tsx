@@ -7,11 +7,12 @@ import { resizeGeneratorToBounds, supportsGeneratorResizeBack } from '../lib/gen
 import { GENERATOR_LIBRARY_ITEMS } from '../lib/libraryItems'
 import { getNodeSize } from '../lib/nodeDimensions'
 import { generateCenterlineForNode } from '../lib/centerline'
+import { computeCutPlan, manualJobsFromComputed } from '../lib/jobs'
 import { AppIcon, Icons } from '../lib/icons'
 import { useEditorStore } from '../store'
-import type { CanvasNode, CenterlineMetadata, GeneratorParams, GroupNode, RectNode } from '../types/editor'
+import type { CanvasNode, CenterlineMetadata, GeneratorParams, GroupNode, MachiningSettings, PathAnchor, RectNode } from '../types/editor'
 import type { MaterialPreset } from '../lib/materialPresets'
-import { MaterialTabContent, PreviewTabContent } from './MaterialTabContent'
+import { MaterialTabContent, NumberField, PathAnchorPicker, PreviewTabContent } from './MaterialTabContent'
 import { CutDepthEditor } from './CutDepthEditor'
 import { DowelHoleForm } from './library/DowelHoleForm'
 import { ScallopFrameForm } from './library/ScallopFrameForm'
@@ -36,6 +37,8 @@ interface StudioInspectorProps {
 export function StudioInspector({ activeTab, onTabChange, materialPreset, onMaterialChange }: StudioInspectorProps) {
   const viewMode = useEditorStore((s) => s.preview.viewMode)
   const isPreview3d = viewMode === 'preview3d'
+  const isPrepare = viewMode === 'prepare'
+  const [prepareTab, setPrepareTab] = useState<'job' | 'setup' | 'output'>('job')
 
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
@@ -44,34 +47,69 @@ export function StudioInspector({ activeTab, onTabChange, materialPreset, onMate
 
       {/* Tabs */}
       <div className="px-4 pb-4">
-        <Tabs
-          className="w-full"
-          selectedKey={activeTab}
-          onSelectionChange={(key) => onTabChange(String(key) as InspectorTab)}
-        >
-          <Tabs.ListContainer>
-            <Tabs.List aria-label="Inspector tabs" className="grid w-full grid-cols-3">
-              <Tabs.Tab id="design">
-                Design
-                <Tabs.Indicator />
-              </Tabs.Tab>
-              <Tabs.Tab id="cut">
-                Cut
-                <Tabs.Indicator />
-              </Tabs.Tab>
-              <Tabs.Tab id="material">
-                {isPreview3d ? 'Camera' : 'Material'}
-                <Tabs.Indicator />
-              </Tabs.Tab>
-            </Tabs.List>
-          </Tabs.ListContainer>
-        </Tabs>
-        <SelectedArtHint />
+        {isPrepare ? (
+          <Tabs
+            key="prepare-inspector-tabs"
+            className="w-full"
+            selectedKey={prepareTab}
+            onSelectionChange={(key) => setPrepareTab(String(key) as typeof prepareTab)}
+          >
+            <Tabs.ListContainer>
+              <Tabs.List aria-label="Prepare inspector tabs" className="grid w-full grid-cols-3">
+                <Tabs.Tab id="job">
+                  Job
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="setup">
+                  Setup
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+                <Tabs.Tab id="output">
+                  Output
+                  <Tabs.Indicator />
+                </Tabs.Tab>
+              </Tabs.List>
+            </Tabs.ListContainer>
+          </Tabs>
+        ) : (
+          <>
+            <Tabs
+              key="studio-inspector-tabs"
+              className="w-full"
+              selectedKey={activeTab}
+              onSelectionChange={(key) => onTabChange(String(key) as InspectorTab)}
+            >
+              <Tabs.ListContainer>
+                <Tabs.List aria-label="Inspector tabs" className="grid w-full grid-cols-3">
+                  <Tabs.Tab id="design">
+                    Design
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="cut">
+                    Cut
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                  <Tabs.Tab id="material">
+                    {isPreview3d ? 'Camera' : 'Material'}
+                    <Tabs.Indicator />
+                  </Tabs.Tab>
+                </Tabs.List>
+              </Tabs.ListContainer>
+            </Tabs>
+            <SelectedArtHint />
+          </>
+        )}
       </div>
 
       {/* Content */}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-        {activeTab === 'design' ? (
+        {isPrepare ? (
+          <PrepareInspectorContent
+            activeTab={prepareTab}
+            materialPreset={materialPreset}
+            onMaterialChange={onMaterialChange}
+          />
+        ) : activeTab === 'design' ? (
           <DesignTabContent />
         ) : activeTab === 'cut' ? (
           <CutTabContent />
@@ -81,6 +119,240 @@ export function StudioInspector({ activeTab, onTabChange, materialPreset, onMate
           <MaterialTabContent materialPreset={materialPreset} onMaterialChange={onMaterialChange} />
         )}
       </div>
+    </div>
+  )
+}
+
+function PrepareInspectorContent({
+  activeTab,
+  materialPreset,
+  onMaterialChange,
+}: {
+  activeTab: 'job' | 'setup' | 'output'
+  materialPreset: MaterialPreset
+  onMaterialChange: (preset: MaterialPreset) => void
+}) {
+  if (activeTab === 'output') {
+    return <MaterialTabContent materialPreset={materialPreset} onMaterialChange={onMaterialChange} />
+  }
+  if (activeTab === 'setup') {
+    return <PrepareSetupContent />
+  }
+  return <PrepareJobContent />
+}
+
+function formatMm(value: number | null | undefined, digits = 1): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value.toFixed(digits)} mm`
+}
+
+function usePrepareCutPlan() {
+  const artboard = useEditorStore((s) => s.artboard)
+  const nodesById = useEditorStore((s) => s.nodesById)
+  const rootIds = useEditorStore((s) => s.rootIds)
+  const machiningSettings = useEditorStore((s) => s.machiningSettings)
+
+  return useMemo(
+    () => computeCutPlan(rootIds, nodesById, machiningSettings, artboard),
+    [artboard, machiningSettings, nodesById, rootIds],
+  )
+}
+
+function PrepareJobContent() {
+  const cutPlan = usePrepareCutPlan()
+  const selectedJobId = useEditorStore((s) => s.selectedJobId)
+  const setSelectedJob = useEditorStore((s) => s.setSelectedJob)
+  const setHoveredPathAnchor = useEditorStore((s) => s.setHoveredPathAnchor)
+  const updateJob = useEditorStore((s) => s.updateJob)
+  const machiningSettings = useEditorStore((s) => s.machiningSettings)
+  const setMachiningSettings = useEditorStore((s) => s.setMachiningSettings)
+  const prepareShowCutNumbers = useEditorStore((s) => s.prepareShowCutNumbers)
+  const setPrepareShowCutNumbers = useEditorStore((s) => s.setPrepareShowCutNumbers)
+  const prepareExportCutNumbers = useEditorStore((s) => s.prepareExportCutNumbers)
+  const setPrepareExportCutNumbers = useEditorStore((s) => s.setPrepareExportCutNumbers)
+
+  const selectedJob =
+    (selectedJobId ? cutPlan.jobs.find((job) => job.id === selectedJobId) : null) ??
+    cutPlan.jobs[0] ??
+    null
+  const seed = useMemo(() => manualJobsFromComputed(cutPlan.jobs), [cutPlan.jobs])
+
+  const updateSelectedJob = (patch: Partial<{
+    name: string
+    pathAnchor: PathAnchor
+  }>) => {
+    if (!selectedJob) return
+    updateJob(selectedJob.id, patch, seed)
+    setSelectedJob(selectedJob.id)
+  }
+
+  if (!selectedJob) {
+    return (
+      <div className="rounded-md border border-dashed border-border bg-content1 px-3 py-3 text-sm text-muted-foreground">
+        Place geometry on the artboard to create prepare jobs.
+      </div>
+    )
+  }
+
+  const width = selectedJob.boundsMm.maxX - selectedJob.boundsMm.minX
+  const height = selectedJob.boundsMm.maxY - selectedJob.boundsMm.minY
+  const sharedLine = selectedJob.anchorAlignment?.sharedX != null
+    ? `Shared X ${formatMm(selectedJob.anchorAlignment.sharedX)}`
+    : selectedJob.anchorAlignment?.sharedY != null
+      ? `Shared Y ${formatMm(selectedJob.crossOffsetFromArtboardBL.y)} from bottom`
+      : 'No shared line'
+
+  return (
+    <div className="space-y-5">
+      <section className="space-y-3">
+        <SectionHeading title="Selected job" />
+        <div className="space-y-2">
+          <label className="grid gap-1">
+            <span className="text-xs text-muted-foreground">Name</span>
+            <input
+              className="h-9 rounded-md border border-border bg-content1 px-2 text-sm text-foreground outline-none focus:border-primary"
+              value={selectedJob.name}
+              onChange={(e) => updateSelectedJob({ name: e.target.value })}
+            />
+          </label>
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <PrepareStat label="Items" value={String(selectedJob.nodeIds.length)} />
+            <PrepareStat label="Bounds" value={`${formatMm(width)} × ${formatMm(height)}`} />
+            <PrepareStat label="X BL" value={formatMm(selectedJob.crossOffsetFromArtboardBL.x)} />
+            <PrepareStat label="Y BL" value={formatMm(selectedJob.crossOffsetFromArtboardBL.y)} />
+          </div>
+          <div className="rounded-md border border-border bg-content1 px-3 py-2 text-xs text-muted-foreground">
+            {sharedLine}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeading title="Job anchor" />
+        <PathAnchorPicker
+          value={selectedJob.pathAnchor}
+          onChange={(pathAnchor) => updateSelectedJob({ pathAnchor })}
+          onPreview={setHoveredPathAnchor}
+        />
+        <button
+          type="button"
+          className="text-xs text-primary underline-offset-2 hover:underline"
+          onClick={() => setSelectedJob(null)}
+        >
+          Edit whole-file default
+        </button>
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeading title="Display" />
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={prepareShowCutNumbers}
+            onChange={(e) => setPrepareShowCutNumbers(e.target.checked)}
+            className="rounded border-border"
+          />
+          Show cut order numbers on canvas
+        </label>
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={prepareExportCutNumbers}
+            onChange={(e) => setPrepareExportCutNumbers(e.target.checked)}
+            className="rounded border-border"
+          />
+          Include cut order numbers in PDF export
+        </label>
+      </section>
+
+      {!selectedJobId && (
+        <section className="space-y-3">
+          <SectionHeading title="Whole-file default" />
+          <PathAnchorPicker
+            value={machiningSettings.pathAnchor}
+            onChange={(pathAnchor) => setMachiningSettings({ pathAnchor })}
+            onPreview={setHoveredPathAnchor}
+          />
+        </section>
+      )}
+    </div>
+  )
+}
+
+function PrepareSetupContent() {
+  const machiningSettings = useEditorStore((s) => s.machiningSettings)
+  const setMachiningSettings = useEditorStore((s) => s.setMachiningSettings)
+  const commitManualJobs = useEditorStore((s) => s.commitManualJobs)
+  const setSelectedJob = useEditorStore((s) => s.setSelectedJob)
+  const setHoveredPathAnchor = useEditorStore((s) => s.setHoveredPathAnchor)
+
+  const setField = (patch: Partial<MachiningSettings>) => setMachiningSettings(patch)
+
+  return (
+    <div className="space-y-5">
+      <section className="space-y-3">
+        <SectionHeading title="Jobs" />
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={machiningSettings.jobsEnabled}
+            onChange={(e) => setField({ jobsEnabled: e.target.checked })}
+            className="rounded border-border"
+          />
+          Split into jobs with rezero pauses
+        </label>
+        {machiningSettings.manualJobs ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => {
+              commitManualJobs(null)
+              setSelectedJob(null)
+            }}
+          >
+            Reset jobs to auto
+          </Button>
+        ) : null}
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeading title="Default anchor" />
+        <PathAnchorPicker
+          value={machiningSettings.pathAnchor}
+          onChange={(pathAnchor) => setField({ pathAnchor })}
+          onPreview={setHoveredPathAnchor}
+        />
+      </section>
+
+      <section className="space-y-3">
+        <SectionHeading title="Anchor alignment" />
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={machiningSettings.alignJobAnchors}
+            onChange={(e) => setField({ alignJobAnchors: e.target.checked })}
+            className="rounded border-border"
+          />
+          Align nearby job anchors onto a shared line
+        </label>
+        <NumberField
+          label="Tolerance"
+          unit="mm"
+          value={machiningSettings.alignJobAnchorsToleranceMm}
+          onChange={(value) => {
+            if (value != null && value >= 0) setField({ alignJobAnchorsToleranceMm: value })
+          }}
+        />
+      </section>
+    </div>
+  )
+}
+
+function PrepareStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border border-border bg-content1 px-3 py-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-0.5 font-medium tabular-nums text-foreground">{value}</div>
     </div>
   )
 }

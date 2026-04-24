@@ -1,5 +1,5 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
-import type { ChangeEvent, DragEvent } from 'react'
+import { useMemo, useRef, useState, useCallback, useEffect } from 'react'
+import type { ChangeEvent, DragEvent, MouseEvent as ReactMouseEvent } from 'react'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 
 import { Button, ButtonGroup, Dropdown, Input, Label, ProgressBar, Tabs } from '@heroui/react'
@@ -11,7 +11,8 @@ import { TopBar } from './components/TopBar'
 import { PreviewCanvas } from './components/preview/PreviewCanvas'
 import { PlaybackTimeline } from './components/preview/PlaybackTimeline'
 import { GcodeViewer } from './components/preview/GcodeViewer'
-import { PreparePanel } from './components/prepare/PreparePanel'
+import { PrepareJobSummary, PreparePanel } from './components/prepare/PreparePanel'
+import { PrepareJobPlaybackTimeline } from './components/prepare/PrepareJobPlaybackTimeline'
 import { useGcodeGeneration } from './hooks/useGcodeGeneration'
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts'
 import { AppIcon, Icons } from './lib/icons'
@@ -24,6 +25,7 @@ import { getAutoImportPlacement } from './lib/importPlacement'
 import { loadStudioPreferences, saveStudioPreferences } from './lib/studioPreferences'
 import { useEditorStore } from './store'
 import { insertTabs } from './lib/gcodeTabInsertion'
+import { computeCutPlan } from './lib/jobs'
 import type { ViewMode } from './types/preview'
 import type { CanvasNode } from './types/editor'
 
@@ -65,6 +67,24 @@ function App() {
   const [isDragOver, setIsDragOver] = useState(false)
   const [isInitializingPreview, setIsInitializingPreview] = useState(false)
   const [downloadFormat, setDownloadFormat] = useState<'nc' | 'gcode'>('nc')
+  const [prepareSummaryCollapsed, setPrepareSummaryCollapsed] = useState(false)
+  const [prepareSummaryHeight, setPrepareSummaryHeight] = useState(160)
+  const [prepareSummaryUserResized, setPrepareSummaryUserResized] = useState(false)
+  const prepareJobCount = useMemo(
+    () => computeCutPlan(rootIds, nodesById, machiningSettings, artboard).jobs.length,
+    [rootIds, nodesById, machiningSettings, artboard],
+  )
+  // Auto-fit the jobs panel to the number of jobs when the user hasn't
+  // explicitly dragged the resize handle. Header ~44, row ~52, padding ~24.
+  const prepareSummaryAutoHeight = useMemo(() => {
+    const rows = Math.max(1, prepareJobCount)
+    const desired = 44 + rows * 52 + 24
+    return Math.max(160, Math.min(520, desired))
+  }, [prepareJobCount])
+  const prepareSummaryEffectiveHeight = prepareSummaryUserResized
+    ? prepareSummaryHeight
+    : prepareSummaryAutoHeight
+  const prepareCenterRef = useRef<HTMLDivElement | null>(null)
   const preferencesLoadedRef = useRef(false)
   const skipInitialPreferencesSaveRef = useRef(true)
 
@@ -316,6 +336,27 @@ function App() {
     }
   }
 
+  const startPrepareSummaryResize = (event: ReactMouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const container = prepareCenterRef.current
+    if (!container) return
+
+    const rect = container.getBoundingClientRect()
+    const onMove = (moveEvent: MouseEvent) => {
+      const nextHeight = rect.bottom - moveEvent.clientY
+      const maxHeight = Math.max(120, rect.height * 0.75)
+      setPrepareSummaryHeight(Math.max(96, Math.min(maxHeight, nextHeight)))
+      setPrepareSummaryUserResized(true)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
+
   const handleViewModeChange = useCallback((mode: ViewMode) => {
     if (mode === 'preview3d' && gcode.result) {
       setIsInitializingPreview(true)
@@ -379,6 +420,24 @@ function App() {
           <div className="flex h-full flex-col overflow-hidden border-r border-border bg-background">
             {isPreview3d ? (
               <GcodeViewer />
+            ) : isPrepare ? (
+              <>
+                <div className="shrink-0 border-b border-border px-4 py-4">
+                  <div className="text-xl font-bold text-foreground">Engrav Studio</div>
+                  <Input
+                    aria-label="Project name"
+                    className="mt-4 w-full max-w-none"
+                    value={projectName}
+                    onChange={(e) => setProjectName(e.target.value)}
+                  />
+                  <div className="mt-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Cut order
+                  </div>
+                </div>
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  <LayerTree fixedView="cutOrder" hideModeTabs />
+                </div>
+              </>
             ) : (
               <>
                 <div className="shrink-0 border-b border-border px-4 py-4">
@@ -453,7 +512,7 @@ function App() {
                 {/* Panel body */}
                 <div className="min-h-0 flex-1 overflow-hidden">
                   {leftPanelTab === 'layers' ? (
-                    <LayerTree />
+                    <LayerTree fixedView="layers" hideModeTabs />
                   ) : (
                     <LibraryPanel />
                   )}
@@ -481,12 +540,51 @@ function App() {
               gcodeResult={gcode.result}
               gcodeError={gcode.error}
               onDismissGcode={gcode.reset}
+              prepareExportControl={
+                <PreparePanel projectName={projectName} materialPreset={materialPreset} exportOnly />
+              }
             />
             <div className="min-h-0 flex-1 relative">
               {isPreview3d ? (
                 <PreviewCanvas />
               ) : isPrepare ? (
-                <PreparePanel projectName={projectName} materialPreset={materialPreset} />
+                <div
+                  ref={prepareCenterRef}
+                  className="grid h-full min-h-0"
+                  style={{
+                    gridTemplateRows: prepareSummaryCollapsed
+                      ? 'minmax(0, 1fr) auto 40px'
+                      : `minmax(0, 1fr) auto 6px ${prepareSummaryEffectiveHeight}px`,
+                  }}
+                >
+                  <div className="relative min-h-0">
+                    <Canvas
+                      materialPreset={materialPreset}
+                      prepareMode
+                    />
+                  </div>
+                  <PrepareJobPlaybackTimeline />
+                  {prepareSummaryCollapsed ? (
+                    <PrepareJobSummary
+                      collapsed
+                      onToggle={() => setPrepareSummaryCollapsed(false)}
+                    />
+                  ) : (
+                    <>
+                      <div
+                        className="cursor-row-resize border-y border-border bg-[var(--surface)] transition-colors hover:bg-primary/30"
+                        role="separator"
+                        aria-orientation="horizontal"
+                        onMouseDown={startPrepareSummaryResize}
+                      />
+                      <div className="flex min-h-0 flex-col border-t border-border bg-background">
+                        <PrepareJobSummary
+                          onToggle={() => setPrepareSummaryCollapsed(true)}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
               ) : (
                 <Canvas
                   allowStageSelection={inspectorTab === 'material'}

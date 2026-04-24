@@ -628,7 +628,7 @@ export function PreviewTabContent() {
   )
 }
 
-function PathAnchorPicker({
+export function PathAnchorPicker({
   value,
   onChange,
   onPreview,
@@ -677,7 +677,7 @@ function PathAnchorPicker({
 
 // ── Shared UI components ──
 
-function SectionHeading({
+export function SectionHeading({
   title,
   rightContent,
 }: {
@@ -739,7 +739,7 @@ function NumberPill({
   )
 }
 
-function NumberField({
+export function NumberField({
   label,
   unit,
   value,

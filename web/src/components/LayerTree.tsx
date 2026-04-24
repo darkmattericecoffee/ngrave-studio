@@ -6,6 +6,7 @@ import { Pin } from 'lucide-react'
 import { AppIcon, Icons } from '../lib/icons'
 import { depthToColor } from '../lib/cncVisuals'
 import {
+  ancestorMatrix,
   assignLeafIdsToJob,
   computeCutPlan,
   manualJobsFromComputed,
@@ -13,6 +14,7 @@ import {
   normalizeManualJobs,
   reorderManualJobs,
   splitManualJobsAtCutIndex,
+  type ComputedJob,
 } from '../lib/jobs'
 import {
   buildLayerCncSummary,
@@ -20,7 +22,14 @@ import {
   getLayerPreviewVisualProps,
   type LayerCncSummary,
 } from '../lib/layerTreePresentation'
-import { boundsToViewBox, getNodePreviewBounds } from '../lib/nodeBounds'
+import {
+  boundsToViewBox,
+  getNodePreviewBounds,
+  multiplyMatrices,
+  nodeMatrix,
+  type Bounds,
+  type Matrix,
+} from '../lib/nodeBounds'
 import { useEditorStore } from '../store'
 import { CutOrderView } from './CutOrderView'
 import { EditorContextMenu } from './EditorContextMenu'
@@ -174,6 +183,7 @@ function renderPreviewNode(
   node: CanvasNode,
   nodesById: Record<string, CanvasNode>,
   parentCncMetadata?: CncMetadata,
+  strokeOverride?: number,
 ) {
   const transform = nodeTransform(node)
   const opacity = node.opacity === 1 ? undefined : node.opacity
@@ -184,21 +194,32 @@ function renderPreviewNode(
       <g key={node.id} transform={transform} opacity={opacity}>
         {(node as GroupNode).childIds.map((childId) => {
           const child = nodesById[childId]
-          return child ? renderPreviewNode(child, nodesById, childCncMetadata) : null
+          return child
+            ? renderPreviewNode(child, nodesById, childCncMetadata, strokeOverride)
+            : null
         })}
       </g>
     )
   }
 
   const paint = getLayerPreviewVisualProps(node, parentCncMetadata)
-  const sharedProps = {
-    transform,
-    opacity,
-    fill: paint.fill,
-    stroke: paint.stroke,
-    strokeWidth: paint.strokeWidth,
-    vectorEffect: 'non-scaling-stroke',
-  } as const
+  const sharedProps =
+    strokeOverride != null
+      ? ({
+          transform,
+          opacity,
+          fill: paint.fill,
+          stroke: paint.stroke,
+          strokeWidth: strokeOverride,
+        } as const)
+      : ({
+          transform,
+          opacity,
+          fill: paint.fill,
+          stroke: paint.stroke,
+          strokeWidth: paint.strokeWidth,
+          vectorEffect: 'non-scaling-stroke',
+        } as const)
 
   if (node.type === 'rect') {
     return (
@@ -244,6 +265,128 @@ function renderPreviewNode(
   )
 }
 
+function mergeBoundsUnion(a: Bounds | null, b: Bounds | null): Bounds | null {
+  if (!a) return b
+  if (!b) return a
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  }
+}
+
+function renderLeafAtMatrix(
+  node: CanvasNode,
+  matrix: Matrix,
+  strokeWidth: number,
+  parentCncMetadata?: CncMetadata,
+) {
+  const m = `matrix(${matrix.a} ${matrix.b} ${matrix.c} ${matrix.d} ${matrix.e} ${matrix.f})`
+  const paint = getLayerPreviewVisualProps(node, parentCncMetadata)
+  const opacity = node.opacity === 1 ? undefined : node.opacity
+  const shared = {
+    transform: m,
+    fill: paint.fill,
+    stroke: paint.stroke,
+    strokeWidth,
+    opacity,
+  }
+  if (node.type === 'rect') {
+    return (
+      <rect
+        key={node.id}
+        {...shared}
+        x={0}
+        y={0}
+        width={node.width}
+        height={node.height}
+        rx={node.cornerRadius}
+      />
+    )
+  }
+  if (node.type === 'circle') {
+    return <circle key={node.id} {...shared} cx={0} cy={0} r={node.radius} />
+  }
+  if (node.type === 'line') {
+    const lineNode = node as LineNode
+    const Tag = lineNode.closed ? 'polygon' : 'polyline'
+    return (
+      <Tag
+        key={node.id}
+        {...shared}
+        points={linePoints(lineNode.points)}
+        fill={lineNode.closed ? paint.fill : 'none'}
+        strokeLinecap={lineNode.lineCap}
+        strokeLinejoin={lineNode.lineJoin}
+        fillRule={lineNode.fillRule}
+      />
+    )
+  }
+  if (node.type === 'group') return null
+  return (
+    <path
+      key={node.id}
+      {...shared}
+      d={node.data}
+      fillRule={node.fillRule}
+    />
+  )
+}
+
+export function JobPreview({
+  job,
+  nodesById,
+  size = LAYER_PREVIEW_SIZE,
+}: {
+  job: ComputedJob
+  nodesById: Record<string, CanvasNode>
+  size?: number
+}) {
+  const { bounds, items } = useMemo(() => {
+    let b: Bounds | null = null
+    const items: { node: CanvasNode; matrix: Matrix }[] = []
+    for (const id of job.nodeIds) {
+      const node = nodesById[id]
+      if (!node) continue
+      const am = ancestorMatrix(node, nodesById)
+      const nb = getNodePreviewBounds(node, nodesById, am)
+      if (nb) b = mergeBoundsUnion(b, nb)
+      const world = multiplyMatrices(am, nodeMatrix(node))
+      items.push({ node, matrix: world })
+    }
+    return { bounds: b, items }
+  }, [job, nodesById])
+
+  // Keep strokes at ~0.8 screen-px regardless of how big the design is in
+  // user units. Without this, non-scaling-stroke floors strokes to 1 screen
+  // px which reads as a chunky ratio against the tiny thumbnail.
+  const strokeWidth = bounds
+    ? (Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY) / size) * 0.8
+    : 0.5
+
+  return (
+    <span
+      className="inline-flex shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-neutral-700 text-muted-foreground"
+      style={{ width: size, height: size }}
+      aria-hidden="true"
+    >
+      {bounds ? (
+        <svg
+          width={size}
+          height={size}
+          viewBox={boundsToViewBox(bounds)}
+          className="h-full w-full"
+        >
+          {items.map(({ node, matrix }) => renderLeafAtMatrix(node, matrix, strokeWidth))}
+        </svg>
+      ) : (
+        <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+      )}
+    </span>
+  )
+}
+
 export function LayerPreview({
   node,
   nodesById,
@@ -255,7 +398,7 @@ export function LayerPreview({
 
   return (
     <span
-      className="inline-flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-white text-muted-foreground"
+      className="inline-flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded border border-border bg-neutral-700 text-muted-foreground"
       aria-hidden="true"
     >
       {bounds ? (
@@ -265,7 +408,15 @@ export function LayerPreview({
           viewBox={boundsToViewBox(bounds)}
           className="h-full w-full"
         >
-          {renderPreviewNode(node, nodesById)}
+          {renderPreviewNode(
+            node,
+            nodesById,
+            undefined,
+            (Math.max(
+              bounds.maxX - bounds.minX,
+              bounds.maxY - bounds.minY,
+            ) / LAYER_PREVIEW_SIZE) * 0.8,
+          )}
         </svg>
       ) : (
         <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
@@ -274,7 +425,14 @@ export function LayerPreview({
   )
 }
 
-export function LayerTree() {
+type LayerTreeView = 'layers' | 'cutOrder'
+
+interface LayerTreeProps {
+  fixedView?: LayerTreeView
+  hideModeTabs?: boolean
+}
+
+export function LayerTree({ fixedView, hideModeTabs = false }: LayerTreeProps = {}) {
   const nodesById = useEditorStore((s) => s.nodesById)
   const rootIds = useEditorStore((s) => s.rootIds)
   const selectedIds = useEditorStore((s) => s.selectedIds)
@@ -285,7 +443,6 @@ export function LayerTree() {
   const setHoveredId = useEditorStore((s) => s.setHoveredId)
   const defaultDepth = useEditorStore((s) => s.machiningSettings.defaultDepthMm)
   const cutOrderStrategy = useEditorStore((s) => s.machiningSettings.cutOrderStrategy)
-  const manualCutOrder = useEditorStore((s) => s.machiningSettings.manualCutOrder)
   const jobsEnabled = useEditorStore((s) => s.machiningSettings.jobsEnabled)
   const manualJobs = useEditorStore((s) => s.machiningSettings.manualJobs)
   const machiningSettings = useEditorStore((s) => s.machiningSettings)
@@ -295,8 +452,12 @@ export function LayerTree() {
   const commitManualJobs = useEditorStore((s) => s.commitManualJobs)
   const setMachiningSettings = useEditorStore((s) => s.setMachiningSettings)
   const pushHistory = useEditorStore((s) => s.pushHistory)
-  const view = useEditorStore((s) => s.layerPanelView)
-  const setView = useEditorStore((s) => s.setLayerPanelView)
+  const storeView = useEditorStore((s) => s.layerPanelView)
+  const setStoreView = useEditorStore((s) => s.setLayerPanelView)
+  const view = fixedView ?? storeView
+  const setView = (nextView: LayerTreeView) => {
+    if (!fixedView) setStoreView(nextView)
+  }
   const [query, setQuery] = useState('')
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   const [lastClickedId, setLastClickedId] = useState<string | null>(null)
@@ -562,6 +723,7 @@ export function LayerTree() {
         }}
         onOpenChange={(isOpen) => setContextMenu((current) => ({ ...current, isOpen }))}
       />
+      {!hideModeTabs && (
       <div className="flex items-center gap-1 border-b border-border px-3 pt-3">
         <button
           type="button"
@@ -588,6 +750,7 @@ export function LayerTree() {
           Cut Order
         </button>
       </div>
+      )}
       {view === 'cutOrder' ? (
         <div className="border-b border-border px-4 py-3">
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -713,6 +876,7 @@ export function LayerTree() {
           cutOrder={cutOrder}
           nodesById={nodesById}
           selectedIds={selectedIds}
+          selectedJobId={selectedJobId}
           defaultDepth={defaultDepth}
           jobs={displayedJobs}
           onSelect={(id, e) => handleCutOrderRowSelect(id, e)}
@@ -725,59 +889,12 @@ export function LayerTree() {
           onRenameJob={jobsEnabled ? handleRenameJob : undefined}
           onReorderJobs={jobsEnabled ? handleReorderJobs : undefined}
           onJobDragStart={jobsEnabled ? () => selectMany([]) : undefined}
+          onSelectJob={(jobId) =>
+            setSelectedJob(selectedJobId === jobId ? null : jobId)
+          }
         />
       ) : (
       <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
-        {/* Jobs tier — shown only when the user has pinned a manual partition
-            with >1 job. Auto-derived jobs live in the preview/canvas for now
-            because they depend on cutOrder + node bounds that this tree
-            doesn't currently memoise. Clicking a job routes the anchor
-            picker to that job via `selectedJobId`. */}
-        {jobsEnabled && manualJobs && manualJobs.length > 1 ? (
-          <div className="mb-3 rounded-lg border border-border bg-[var(--surface)] p-2">
-            <div className="flex items-center justify-between px-1 pb-2">
-              <p className="text-xs font-semibold text-foreground">Jobs</p>
-              <button
-                type="button"
-                className="text-[11px] text-muted-foreground underline-offset-2 hover:underline"
-                onClick={() => commitManualJobs(null)}
-              >
-                Reset to auto
-              </button>
-            </div>
-            <div className="space-y-1">
-              {manualJobs.map((job, i) => {
-                const active = selectedJobId === job.id
-                return (
-                  <button
-                    key={job.id}
-                    type="button"
-                    className={cn(
-                      'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors',
-                      active
-                        ? 'bg-[var(--surface-tertiary)] text-foreground'
-                        : 'text-muted-foreground hover:bg-[var(--surface-secondary)]',
-                    )}
-                    onClick={() => setSelectedJob(active ? null : job.id)}
-                  >
-                    <span className="font-mono text-[10px] text-muted-foreground">
-                      J{i + 1}
-                    </span>
-                    <span className="flex-1 truncate">{job.name}</span>
-                    <span className="text-[10px] text-muted-foreground">
-                      {job.nodeIds.length} item{job.nodeIds.length === 1 ? '' : 's'}
-                    </span>
-                    {job.forceOwnJob ? (
-                      <span className="rounded bg-[var(--surface-secondary)] px-1 text-[10px]">
-                        solo
-                      </span>
-                    ) : null}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        ) : null}
         {filteredRootIds.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-[var(--surface)] px-3 py-3 text-sm text-muted-foreground">
             {rootIds.length === 0

@@ -108,7 +108,7 @@ export function resolveNodePreviewEngraveMode(
 }
 
 export function shouldUseToolDiameterStrokePreview(
-  node: CanvasNode,
+  _node: CanvasNode,
   resolvedMode: NormalizedEngraveType,
 ): boolean {
   return resolvedMode === 'contour'
