@@ -36,6 +36,12 @@ export interface JobSpec {
   cross_offset_from_artboard_bl: [number, number];
   /** True when auto-detection tagged this job as the passe-partout / frame. */
   is_big_spanner: boolean;
+  /** Optional explicit anchor point in artboard-mm (origin = top-left, y grows
+   *  down). When set, Rust uses this point as the job's local-zero instead of
+   *  deriving it from `path_anchor` + toolpath bounds. The frontend populates
+   *  this when `alignJobAnchors` snapped the anchor off the enum-derived
+   *  position so the gcode zero matches the pencil cross shown in the UI. */
+  anchor_point_override: [number, number] | null;
 }
 
 export interface Settings {

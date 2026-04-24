@@ -285,6 +285,39 @@ export function MaterialTabContent({ materialPreset, onMaterialChange }: Materia
         <p className="text-xs text-muted-foreground">
           This point in the generated cut bounds becomes machine 0,0. Bottom left keeps today&apos;s output.
         </p>
+
+        <div className="space-y-2 border-t border-border pt-3">
+          <label className="flex items-center gap-2 text-sm text-foreground">
+            <input
+              type="checkbox"
+              checked={machiningSettings.alignJobAnchors}
+              onChange={(e) => setField({ alignJobAnchors: e.target.checked })}
+              className="rounded border-border"
+            />
+            Align nearby job anchors onto a shared line
+          </label>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>Tolerance</span>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              value={machiningSettings.alignJobAnchorsToleranceMm}
+              onChange={(e) => {
+                const next = Number.parseFloat(e.target.value)
+                if (Number.isFinite(next) && next >= 0) {
+                  setField({ alignJobAnchorsToleranceMm: next })
+                }
+              }}
+              disabled={!machiningSettings.alignJobAnchors}
+              className="w-16 rounded border border-border bg-background px-1.5 py-0.5 text-right text-foreground disabled:opacity-50"
+            />
+            <span>mm</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            Centered anchors within this distance snap onto a shared x or y — draw one horizon line on the material and measure one offset per job.
+          </p>
+        </div>
       </section>
 
       {/* Jobs — split the program into rezero checkpoints. */}

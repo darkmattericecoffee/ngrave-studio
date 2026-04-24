@@ -267,17 +267,25 @@ export function jobSpecsFromComputedJobs(
     operationsByJobId.set(jobId, list)
   }
 
-  return computedJobs.map((job) => ({
-    id: job.id,
-    name: job.name,
-    operation_ids: operationsByJobId.get(job.id) ?? [],
-    path_anchor: job.pathAnchor,
-    cross_offset_from_artboard_bl: [
-      job.crossOffsetFromArtboardBL.x,
-      job.crossOffsetFromArtboardBL.y,
-    ],
-    is_big_spanner: job.isBigSpanner,
-  }))
+  return computedJobs.map((job) => {
+    const snapped =
+      job.anchorAlignment &&
+      (job.anchorAlignment.sharedX != null || job.anchorAlignment.sharedY != null)
+    return {
+      id: job.id,
+      name: job.name,
+      operation_ids: operationsByJobId.get(job.id) ?? [],
+      path_anchor: job.pathAnchor,
+      cross_offset_from_artboard_bl: [
+        job.crossOffsetFromArtboardBL.x,
+        job.crossOffsetFromArtboardBL.y,
+      ],
+      is_big_spanner: job.isBigSpanner,
+      anchor_point_override: snapped
+        ? [job.anchorPointMm.x, job.anchorPointMm.y]
+        : null,
+    }
+  })
 }
 
 // ─── Internal helpers ──────────────────────────────────────────────────────────

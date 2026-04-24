@@ -115,17 +115,17 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
 
       <div
         ref={rootRef}
-        className="mx-auto max-w-5xl space-y-6 rounded-lg bg-white p-8 text-neutral-900 shadow-sm"
+        className="mx-auto max-w-5xl space-y-2 rounded-lg bg-white p-4 text-neutral-900 shadow-sm"
       >
         {/* Header */}
-        <header className="flex items-start justify-between border-b border-neutral-200 pb-4">
+        <header className="flex items-start justify-between border-b border-neutral-200 pb-2">
           <div>
-            <h1 className="text-2xl font-semibold">{projectName || 'Untitled project'}</h1>
-            <p className="mt-1 text-sm text-neutral-500">
+            <h1 className="text-xl font-semibold leading-tight">{projectName || 'Untitled project'}</h1>
+            <p className="mt-0.5 text-xs text-neutral-500">
               Generated {generatedAt} · Material: {preset.label}
             </p>
           </div>
-          <div className="text-right text-xs text-neutral-500">
+          <div className="text-right text-[11px] text-neutral-500 leading-snug">
             <div>
               Tool: Ø{fmt(machiningSettings.toolDiameter, 'mm')} {machiningSettings.toolShape}
             </div>
@@ -138,10 +138,7 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
 
         {/* Layout diagram */}
         <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-            Layout
-          </h2>
-          <div className="overflow-hidden rounded-md border border-neutral-200 bg-neutral-50 p-4">
+          <div className="overflow-hidden rounded-md border border-neutral-200 bg-neutral-50 p-2">
             <LayoutDiagram
               artboard={artboard}
               designInnerSvg={designInnerSvg}
@@ -150,86 +147,28 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
               materialPreset={materialPreset}
             />
           </div>
-          <p className="mt-2 text-xs text-neutral-500">
-            Material: {fmt(artboard.width)} × {fmt(artboard.height)}. Design bounds in
-            dashed red. Job anchor crosshairs in green.
-          </p>
         </section>
 
-        {/* Stock + material + machining in two columns */}
-        <section className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <InfoTable
-            title="Material"
-            rows={[
-              ['Preset', preset.label],
-              ['Width', fmt(artboard.width)],
-              ['Height', fmt(artboard.height)],
-              ['Depth', fmt(artboard.thickness)],
-            ]}
-          />
-          <InfoTable
-            title="Machining"
-            rows={[
-              ['Tool diameter', fmt(machiningSettings.toolDiameter)],
-              ['Tool shape', machiningSettings.toolShape],
-              ['Target depth', fmt(machiningSettings.defaultDepthMm)],
-              passMode === 'passes'
-                ? ['Passes', `${machiningSettings.passCount}`]
-                : ['Max stepdown', fmt(machiningSettings.maxStepdown)],
-              ['Cut feed', fmt(machiningSettings.cutFeedrate, 'mm/min', 0)],
-              ['Plunge feed', fmt(machiningSettings.plungeFeedrate, 'mm/min', 0)],
-              ['Tabs', machiningSettings.tabsEnabled ? 'Yes' : 'No'],
-              ['Work anchor', machiningSettings.pathAnchor],
-            ]}
-          />
-        </section>
-
-        {/* Design totals */}
+        {/* Jobs table — moved directly under layout so anchors and their per-job
+            offsets read top-to-bottom in one glance. */}
         <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-            Design totals
-          </h2>
-          {designBounds ? (
-            <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm md:grid-cols-4">
-              <Stat label="Width" value={fmt(designW)} />
-              <Stat label="Height" value={fmt(designH)} />
-              <Stat label="X offset from BL" value={fmt(designOffsetX)} />
-              <Stat label="Y offset from BL" value={fmt(designOffsetYFromBL)} />
-              <Stat label="X offset from TL" value={fmt(designOffsetX)} />
-              <Stat label="Y offset from TL" value={fmt(designOffsetYFromTop)} />
-              <Stat
-                label="Reach right"
-                value={fmt(artboard.width - (designBounds.maxX))}
-              />
-              <Stat
-                label="Reach top"
-                value={fmt(designBounds.minY)}
-              />
-            </div>
-          ) : (
-            <p className="text-sm text-neutral-500">No design geometry placed yet.</p>
-          )}
-        </section>
-
-        {/* Jobs table */}
-        <section>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">
+          <h2 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
             Jobs ({jobs.length})
           </h2>
           {jobs.length === 0 ? (
-            <p className="text-sm text-neutral-500">No jobs — place geometry on the artboard.</p>
+            <p className="text-xs text-neutral-500">No jobs — place geometry on the artboard.</p>
           ) : (
-            <table className="w-full border-collapse text-sm">
+            <table className="w-full border-collapse text-xs">
               <thead>
-                <tr className="border-b border-neutral-300 text-left text-xs uppercase tracking-wide text-neutral-500">
+                <tr className="border-b border-neutral-300 text-left text-[10px] uppercase tracking-wide text-neutral-500">
                   <Th>#</Th>
                   <Th>Name</Th>
                   <Th className="text-right">Cuts</Th>
                   <Th>Anchor</Th>
-                  <Th className="text-right">X from BL</Th>
-                  <Th className="text-right">Y from BL</Th>
-                  <Th className="text-right">Width</Th>
-                  <Th className="text-right">Height</Th>
+                  <Th className="text-right">X BL</Th>
+                  <Th className="text-right">Y BL</Th>
+                  <Th className="text-right">W</Th>
+                  <Th className="text-right">H</Th>
                 </tr>
               </thead>
               <tbody>
@@ -244,7 +183,19 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
                       <Td>{i + 1}</Td>
                       <Td>{job.name}</Td>
                       <Td className="text-right tabular-nums">{job.nodeIds.length}</Td>
-                      <Td>{job.pathAnchor}</Td>
+                      <Td>
+                        {job.pathAnchor}
+                        {job.anchorAlignment?.sharedX != null && (
+                          <span className="ml-1 rounded bg-emerald-100 px-1 text-[9px] font-medium text-emerald-800">
+                            X={fmt(job.anchorAlignment.sharedX)}
+                          </span>
+                        )}
+                        {job.anchorAlignment?.sharedY != null && (
+                          <span className="ml-1 rounded bg-emerald-100 px-1 text-[9px] font-medium text-emerald-800">
+                            Y={fmt(artboard.height - job.anchorAlignment.sharedY)}
+                          </span>
+                        )}
+                      </Td>
                       <Td className="text-right tabular-nums">
                         {fmt(job.crossOffsetFromArtboardBL.x)}
                       </Td>
@@ -260,50 +211,73 @@ export function PreparePanel({ projectName, materialPreset }: PreparePanelProps)
             </table>
           )}
         </section>
+
+        {/* Compact design totals + material + machining as a tight row so the
+            whole report fits on one page. */}
+        {designBounds && (
+          <section>
+            <h2 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+              Design
+            </h2>
+            <div className="grid grid-cols-4 gap-x-3 gap-y-0.5 text-[11px] md:grid-cols-8">
+              <CompactStat label="W" value={fmt(designW)} />
+              <CompactStat label="H" value={fmt(designH)} />
+              <CompactStat label="X BL" value={fmt(designOffsetX)} />
+              <CompactStat label="Y BL" value={fmt(designOffsetYFromBL)} />
+              <CompactStat label="X TL" value={fmt(designOffsetX)} />
+              <CompactStat label="Y TL" value={fmt(designOffsetYFromTop)} />
+              <CompactStat label="Reach R" value={fmt(artboard.width - designBounds.maxX)} />
+              <CompactStat label="Reach T" value={fmt(designBounds.minY)} />
+            </div>
+          </section>
+        )}
+
+        <section>
+          <h2 className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+            Setup
+          </h2>
+          <div className="grid grid-cols-4 gap-x-3 gap-y-0.5 text-[11px] md:grid-cols-8">
+            <CompactStat label="Material" value={preset.label} />
+            <CompactStat label="Size" value={`${fmt(artboard.width)} × ${fmt(artboard.height)}`} />
+            <CompactStat label="Depth" value={fmt(artboard.thickness)} />
+            <CompactStat
+              label="Tool"
+              value={`Ø${fmt(machiningSettings.toolDiameter)} ${machiningSettings.toolShape}`}
+            />
+            <CompactStat label="Target depth" value={fmt(machiningSettings.defaultDepthMm)} />
+            <CompactStat
+              label={passMode === 'passes' ? 'Passes' : 'Max stepdown'}
+              value={
+                passMode === 'passes'
+                  ? `${machiningSettings.passCount}`
+                  : fmt(machiningSettings.maxStepdown)
+              }
+            />
+            <CompactStat
+              label="Cut feed"
+              value={fmt(machiningSettings.cutFeedrate, 'mm/min', 0)}
+            />
+            <CompactStat label="Work anchor" value={machiningSettings.pathAnchor} />
+          </div>
+        </section>
       </div>
     </div>
   )
 }
 
-function InfoTable({
-  title,
-  rows,
-}: {
-  title: string
-  rows: [string, string][]
-}) {
+function CompactStat({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-neutral-500">
-        {title}
-      </h2>
-      <table className="w-full border-collapse text-sm">
-        <tbody>
-          {rows.map(([label, value]) => (
-            <tr key={label} className="border-b border-neutral-200 last:border-b-0">
-              <td className="py-1.5 pr-4 text-neutral-600">{label}</td>
-              <td className="py-1.5 text-right font-medium tabular-nums">{value}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
+    <div className="leading-tight">
+      <div className="text-[9px] uppercase tracking-wide text-neutral-500">{label}</div>
       <div className="font-medium tabular-nums">{value}</div>
     </div>
   )
 }
 
 function Th({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <th className={`py-2 pr-3 font-medium ${className}`}>{children}</th>
+  return <th className={`py-1 pr-2 font-medium ${className}`}>{children}</th>
 }
 
 function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
-  return <td className={`py-1.5 pr-3 ${className}`}>{children}</td>
+  return <td className={`py-0.5 pr-2 ${className}`}>{children}</td>
 }

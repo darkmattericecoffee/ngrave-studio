@@ -16,10 +16,21 @@ interface LayoutDiagramProps {
 }
 
 // Extra mm reserved around the material rect for dimension lines and labels.
-const DIM_PAD = 60
+const DIM_PAD = 80
 const LABEL_PX = 11
 const TICK_LEN = 4
 const DIM_OFFSET = 18
+
+// Per-job anchor tag (filled pill with white text + leader line to anchor).
+// Positioned outside the design-bounds offset dims so both coexist.
+const TAG_FILL = '#059669'
+const TAG_TEXT = '#ffffff'
+const TAG_FONT = 9
+const TAG_PAD_X = 3.5
+const TAG_PAD_Y = 2.5
+const TAG_CHAR_W = TAG_FONT * 0.56
+const TAG_GAP = 40 // mm from material's left edge to tag's right edge (leaves room for Y-offset dim)
+const TAG_BOTTOM_CENTER_OFFSET = 34 // mm from material bottom edge to tag center
 
 function Hdim({
   y,
@@ -115,7 +126,6 @@ export function LayoutDiagram({
   const dY = designBounds ? designBounds.minY : 0
   const dW = designBounds ? designBounds.maxX - designBounds.minX : 0
   const dH = designBounds ? designBounds.maxY - designBounds.minY : 0
-  // Offset from artboard BL corner (y measured up from bottom).
   const offFromBLX = designBounds ? designBounds.minX : 0
   const offFromBLY = designBounds ? matH - designBounds.maxY : 0
 
@@ -178,6 +188,53 @@ export function LayoutDiagram({
         />
       )}
 
+      {/* Shared-axis horizon lines. Drawn before the crosshairs so the crosses
+          read crisp on top. A shared x draws a vertical line across the full
+          material height; a shared y draws a horizontal line. De-duplicated so
+          we emit one line per unique coordinate. */}
+      {(() => {
+        const sharedXs = new Set<number>()
+        const sharedYs = new Set<number>()
+        for (const job of jobs) {
+          const a = job.anchorAlignment
+          if (!a) continue
+          if (a.sharedX != null) sharedXs.add(a.sharedX)
+          if (a.sharedY != null) sharedYs.add(a.sharedY)
+        }
+        const lines: React.ReactNode[] = []
+        for (const x of sharedXs) {
+          lines.push(
+            <line
+              key={`hx-${x}`}
+              x1={x}
+              y1={0}
+              x2={x}
+              y2={matH}
+              stroke="#059669"
+              strokeWidth={0.6}
+              strokeDasharray="4 3"
+              opacity={0.55}
+            />,
+          )
+        }
+        for (const y of sharedYs) {
+          lines.push(
+            <line
+              key={`hy-${y}`}
+              x1={0}
+              y1={y}
+              x2={matW}
+              y2={y}
+              stroke="#059669"
+              strokeWidth={0.6}
+              strokeDasharray="4 3"
+              opacity={0.55}
+            />,
+          )
+        }
+        return lines
+      })()}
+
       {/* Per-job anchor crosshairs */}
       {jobs.map((job, i) => {
         const cx = job.anchorPointMm.x
@@ -205,7 +262,10 @@ export function LayoutDiagram({
       <Hdim y={-DIM_OFFSET} x1={0} x2={matW} label={`W ${fmtMm(matW)}`} placement="above" />
       <Vdim x={matW + DIM_OFFSET} y1={0} y2={matH} label={`H ${fmtMm(matH)}`} placement="right" />
 
-      {/* Design reach + BL offsets */}
+      {/* Design reach + design-bounds offsets from BL.
+          The design offset dims sit in the narrow band next to the material
+          (y≈matH+9, x≈-6); per-job anchor pills sit further out, so both rows
+          coexist without overlap. */}
       {hasDesign && dW > 0 && dH > 0 && (
         <>
           <Hdim
@@ -222,7 +282,6 @@ export function LayoutDiagram({
             label={`Design H ${fmtMm(dH)}`}
             placement="right"
           />
-          {/* X-offset from artboard BL (measured along the bottom edge) */}
           <Hdim
             y={matH + DIM_OFFSET / 2}
             x1={0}
@@ -230,7 +289,6 @@ export function LayoutDiagram({
             label={`X ${fmtMm(offFromBLX)}`}
             placement="above"
           />
-          {/* Y-offset from artboard BL (measured along the left edge, inside the artboard) */}
           <Vdim
             x={-6}
             y1={dY + dH}
@@ -241,19 +299,111 @@ export function LayoutDiagram({
         </>
       )}
 
-      {/* Artboard BL origin marker (0,0) */}
-      <g>
-        <circle cx={0} cy={matH} r={2.4} fill="#1d4ed8" />
-        <text
-          x={4}
-          y={matH - 4}
-          fontSize={LABEL_PX}
-          fill="#1d4ed8"
-          fontFamily="sans-serif"
-        >
-          0,0
-        </text>
-      </g>
+      {/* Per-job X/Y offset pills with leader lines to the anchor.
+          One tag per unique coordinate, so jobs snapped onto a shared horizon
+          line share a pill rather than stacking duplicates. */}
+      {(() => {
+        const xSeen = new Set<number>()
+        const ySeen = new Set<number>()
+        const nodes: React.ReactNode[] = []
+        const pillFor = (label: string) => {
+          const width = Math.max(20, label.length * TAG_CHAR_W + TAG_PAD_X * 2)
+          const height = TAG_FONT + TAG_PAD_Y * 2
+          return { width, height }
+        }
+
+        for (const job of jobs) {
+          const cx = job.anchorPointMm.x
+          const cy = job.anchorPointMm.y
+          const xFromBL = job.crossOffsetFromArtboardBL.x
+          const yFromBL = job.crossOffsetFromArtboardBL.y
+
+          if (!xSeen.has(cx)) {
+            xSeen.add(cx)
+            const label = `X ${fmtMm(xFromBL)}`
+            const { width, height } = pillFor(label)
+            const tagCx = cx
+            const tagCy = matH + TAG_BOTTOM_CENTER_OFFSET
+            const pillTop = tagCy - height / 2
+            nodes.push(
+              <g key={`jx-${job.id}`}>
+                <line
+                  x1={cx}
+                  y1={cy}
+                  x2={tagCx}
+                  y2={pillTop}
+                  stroke={TAG_FILL}
+                  strokeWidth={0.55}
+                  opacity={0.85}
+                />
+                <rect
+                  x={tagCx - width / 2}
+                  y={pillTop}
+                  width={width}
+                  height={height}
+                  rx={2}
+                  ry={2}
+                  fill={TAG_FILL}
+                />
+                <text
+                  x={tagCx}
+                  y={tagCy + TAG_FONT / 2 - 1}
+                  fontSize={TAG_FONT}
+                  textAnchor="middle"
+                  fill={TAG_TEXT}
+                  fontFamily="sans-serif"
+                  fontWeight={700}
+                >
+                  {label}
+                </text>
+              </g>,
+            )
+          }
+
+          if (!ySeen.has(cy)) {
+            ySeen.add(cy)
+            const label = `Y ${fmtMm(yFromBL)}`
+            const { width, height } = pillFor(label)
+            const rightEdge = -TAG_GAP
+            const tagCx = rightEdge - width / 2
+            const tagCy = cy
+            nodes.push(
+              <g key={`jy-${job.id}`}>
+                <line
+                  x1={cx}
+                  y1={cy}
+                  x2={rightEdge}
+                  y2={tagCy}
+                  stroke={TAG_FILL}
+                  strokeWidth={0.55}
+                  opacity={0.85}
+                />
+                <rect
+                  x={tagCx - width / 2}
+                  y={tagCy - height / 2}
+                  width={width}
+                  height={height}
+                  rx={2}
+                  ry={2}
+                  fill={TAG_FILL}
+                />
+                <text
+                  x={tagCx}
+                  y={tagCy + TAG_FONT / 2 - 1}
+                  fontSize={TAG_FONT}
+                  textAnchor="middle"
+                  fill={TAG_TEXT}
+                  fontFamily="sans-serif"
+                  fontWeight={700}
+                >
+                  {label}
+                </text>
+              </g>,
+            )
+          }
+        }
+        return nodes
+      })()}
     </svg>
   )
 }

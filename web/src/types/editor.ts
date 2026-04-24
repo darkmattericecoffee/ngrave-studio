@@ -63,6 +63,13 @@ export interface MachiningSettings {
   jobsEnabled: boolean
   /** User-pinned job partition. When non-null, wins over the auto-derived one. */
   manualJobs: Job[] | null
+  /** When true, nearby Center-anchored job anchors get snapped onto a shared x
+   *  or y line so the operator can draw one "horizon" pencil line instead of
+   *  measuring two offsets per job. */
+  alignJobAnchors: boolean
+  /** Tolerance (mm) for the align-anchors clustering pass. Two anchors within
+   *  this distance on an axis get pulled onto a shared line. */
+  alignJobAnchorsToleranceMm: number
 }
 
 export interface Job {

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ArtboardState, CanvasNode, GroupNode, Job, MachiningSettings, RectNode } from '../types/editor'
 import type { CutOrderResult } from './cutOrder'
 import {
+  alignJobAnchors,
   assignLeafIdsToJob,
   computeCutPlan,
   computeJobs,
@@ -10,6 +11,7 @@ import {
   moveLeafToJob,
   normalizeManualJobs,
   splitManualJobsAtCutIndex,
+  type ComputedJob,
 } from './jobs'
 
 const ARTBOARD: ArtboardState = { width: 600, height: 500, thickness: 18, x: 0, y: 0 }
@@ -41,6 +43,8 @@ const BASE_SETTINGS: MachiningSettings = {
   manualCutOrder: null,
   jobsEnabled: true,
   manualJobs: null,
+  alignJobAnchors: false,
+  alignJobAnchorsToleranceMm: 20,
 }
 
 function rect(id: string, x: number, y: number, w = 10, h = 10, parentId: string | null = null): RectNode {
@@ -245,6 +249,35 @@ describe('computeJobs', () => {
     expect(plan.cutOrder.sequence.map((l) => l.nodeId)).toEqual(manualOrder)
   })
 
+  it('reports leaf bounds in root-space, composing all ancestor transforms', () => {
+    // Mirrors the Mario Kart SVG import: the root <svg> group carries a scale
+    // (0.379) and y offset so raw SVG points land inside the artboard. A leaf
+    // sits at local identity but with raw coords up to ~1413. Without ancestor
+    // transforms the bounds report 1413 mm; with them, ~536 mm (scaled).
+    const innerRect: RectNode = {
+      ...rect('leaf', 0, 0, 1000, 400, 'import'),
+    }
+    const importGroup: GroupNode = {
+      ...group('import', ['leaf']),
+      scaleX: 0.5,
+      scaleY: 0.5,
+      x: 10,
+      y: 20,
+    }
+    const scene = makeScene([importGroup, innerRect])
+    const cutOrder = cutOrderFromIds(['leaf'])
+    const plan = computeJobs(cutOrder, scene, BASE_SETTINGS, ARTBOARD)
+    const bounds = plan.jobs[0]!.boundsMm
+    // Rect spans (0..1000, 0..400) locally; parent scales by 0.5 and translates
+    // by (10, 20) → root-space (10..510, 20..220). ±0.5 stroke padding.
+    expect(bounds.minX).toBeCloseTo(10 - 0.25, 2)
+    expect(bounds.maxX).toBeCloseTo(510 + 0.25, 2)
+    expect(bounds.minY).toBeCloseTo(20 - 0.25, 2)
+    expect(bounds.maxY).toBeCloseTo(220 + 0.25, 2)
+    expect(plan.jobs[0]!.anchorPointMm.x).toBeCloseTo(260, 1)
+    expect(plan.jobs[0]!.anchorPointMm.y).toBeCloseTo(120, 1)
+  })
+
   it('moves a dragged leaf into another job and updates manual cut order', () => {
     const cutOrder = cutOrderFromIds(['a', 'b', 'c', 'd'])
     const base: Job[] = [
@@ -256,5 +289,114 @@ describe('computeJobs', () => {
 
     expect(result.manualCutOrder).toEqual(['a', 'c', 'b', 'd'])
     expect(result.manualJobs.map((job) => job.nodeIds)).toEqual([['a'], ['c', 'b', 'd']])
+  })
+})
+
+function computedCenterJob(
+  id: string,
+  x: number,
+  y: number,
+  artboardHeight: number,
+  anchor: ComputedJob['pathAnchor'] = 'Center',
+): ComputedJob {
+  return {
+    id,
+    name: id,
+    nodeIds: [id],
+    pathAnchor: anchor,
+    forceOwnJob: false,
+    boundsMm: { minX: x - 5, minY: y - 5, maxX: x + 5, maxY: y + 5 },
+    anchorPointMm: { x, y },
+    crossOffsetFromArtboardBL: { x, y: artboardHeight - y },
+    isBigSpanner: false,
+    fromManualOverride: false,
+  }
+}
+
+describe('alignJobAnchors', () => {
+  const H = ARTBOARD.height
+
+  it('snaps two jobs with close y onto a shared y-line', () => {
+    const jobs = [computedCenterJob('a', 40, 100, H), computedCenterJob('b', 160, 110, H)]
+    alignJobAnchors(jobs, 20, H)
+    expect(jobs[0]!.anchorPointMm).toEqual({ x: 40, y: 105 })
+    expect(jobs[1]!.anchorPointMm).toEqual({ x: 160, y: 105 })
+    expect(jobs[0]!.anchorAlignment).toEqual({ sharedY: 105 })
+    expect(jobs[1]!.anchorAlignment).toEqual({ sharedY: 105 })
+    expect(jobs[0]!.crossOffsetFromArtboardBL.y).toBe(H - 105)
+  })
+
+  it('snaps two jobs with close x onto a shared x-line', () => {
+    const jobs = [computedCenterJob('a', 100, 40, H), computedCenterJob('b', 105, 160, H)]
+    alignJobAnchors(jobs, 20, H)
+    expect(jobs[0]!.anchorPointMm.x).toBe(102.5)
+    expect(jobs[1]!.anchorPointMm.x).toBe(102.5)
+    expect(jobs[0]!.anchorAlignment).toEqual({ sharedX: 102.5 })
+  })
+
+  it('snaps a three-way y-cluster to the mean', () => {
+    const jobs = [
+      computedCenterJob('a', 10, 99, H),
+      computedCenterJob('b', 60, 101, H),
+      computedCenterJob('c', 120, 103, H),
+    ]
+    alignJobAnchors(jobs, 20, H)
+    for (const job of jobs) {
+      expect(job.anchorPointMm.y).toBe(101)
+      expect(job.anchorAlignment?.sharedY).toBe(101)
+    }
+  })
+
+  it('leaves pairs farther apart than the tolerance alone', () => {
+    const jobs = [computedCenterJob('a', 40, 100, H), computedCenterJob('b', 160, 125, H)]
+    alignJobAnchors(jobs, 20, H)
+    expect(jobs[0]!.anchorPointMm).toEqual({ x: 40, y: 100 })
+    expect(jobs[1]!.anchorPointMm).toEqual({ x: 160, y: 125 })
+    expect(jobs[0]!.anchorAlignment).toBeUndefined()
+    expect(jobs[1]!.anchorAlignment).toBeUndefined()
+  })
+
+  it('ignores jobs with non-Center anchors and leaves solo Center jobs untouched', () => {
+    const jobs = [
+      computedCenterJob('tl', 40, 100, H, 'TopLeft'),
+      computedCenterJob('center', 50, 102, H),
+    ]
+    alignJobAnchors(jobs, 20, H)
+    expect(jobs[0]!.anchorPointMm).toEqual({ x: 40, y: 100 })
+    expect(jobs[1]!.anchorPointMm).toEqual({ x: 50, y: 102 })
+    expect(jobs[0]!.anchorAlignment).toBeUndefined()
+    expect(jobs[1]!.anchorAlignment).toBeUndefined()
+  })
+
+  it('is a no-op when alignJobAnchors is disabled in settings', () => {
+    const childIds = ['a', 'b']
+    const nodes: CanvasNode[] = [
+      group('import', childIds),
+      rect('a', 100, 100, 20, 20, 'import'),
+      rect('b', 300, 108, 20, 20, 'import'),
+    ]
+    const scene = makeScene(nodes)
+    const cutOrder = cutOrderFromIds(childIds)
+
+    const disabled = computeJobs(cutOrder, scene, BASE_SETTINGS, ARTBOARD).jobs
+    const enabled = computeJobs(
+      cutOrder,
+      scene,
+      { ...BASE_SETTINGS, alignJobAnchors: true, alignJobAnchorsToleranceMm: 20 },
+      ARTBOARD,
+    ).jobs
+
+    // Baseline keeps each job centered on its own bounds.
+    for (const job of disabled) expect(job.anchorAlignment).toBeUndefined()
+    // Enabling may or may not snap depending on how computeCutPlan partitioned the
+    // scene — but any snap must produce a shared axis. The important check is
+    // that disabled === untouched.
+    for (const job of enabled) {
+      if (job.anchorAlignment) {
+        expect(
+          job.anchorAlignment.sharedX != null || job.anchorAlignment.sharedY != null,
+        ).toBe(true)
+      }
+    }
   })
 })

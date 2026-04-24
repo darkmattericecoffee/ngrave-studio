@@ -641,6 +641,8 @@ export const useEditorStore = create<EditorStore>((set, get) => ({
     manualCutOrder: null,
     jobsEnabled: true,
     manualJobs: null,
+    alignJobAnchors: true,
+    alignJobAnchorsToleranceMm: 20,
   },
   viewport: initialViewport,
   ui: {

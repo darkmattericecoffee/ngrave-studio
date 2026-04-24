@@ -2293,7 +2293,10 @@ pub fn svg2program_engraving_multi_with_progress<'a, 'input: 'a>(
                         .map(|s| s.group.clone())
                         .collect::<Vec<_>>(),
                 );
-                let anchor_point = anchor_point_for_bounds(job.path_anchor, job_bounds);
+                let anchor_point = match job.anchor_point_override {
+                    Some([x, y]) => Point::new(x, y),
+                    None => anchor_point_for_bounds(job.path_anchor, job_bounds),
+                };
                 let anchor_offset = Vector::new(-anchor_point.x, -anchor_point.y);
                 let shifted_bounds = translate_bounds(job_bounds, anchor_offset);
                 translate_scheduled_operation_groups(&mut job_groups, anchor_offset);

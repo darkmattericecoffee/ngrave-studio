@@ -98,6 +98,13 @@ pub struct JobSpec {
     pub cross_offset_from_artboard_bl: [f64; 2],
     /// True when auto-detection tagged this job as the passe-partout / frame.
     pub is_big_spanner: bool,
+    /// Optional explicit anchor point in artboard-mm (top-left origin, y
+    /// grows down). When `Some`, we use this as the job's local-zero instead
+    /// of deriving it from `path_anchor` + toolpath bounds. Populated by the
+    /// frontend's align-anchors pass so the gcode zero matches the pencil
+    /// cross shown in the Prepare view.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub anchor_point_override: Option<[f64; 2]>,
 }
 
 /// High-level output configuration

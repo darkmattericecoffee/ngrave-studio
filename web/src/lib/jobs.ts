@@ -1,6 +1,14 @@
 import type { ArtboardState, CanvasNode, Job, MachiningSettings, PathAnchor } from '../types/editor'
 import { computeCutOrder, type CutOrderLeaf, type CutOrderResult } from './cutOrder'
-import { boundsCentroid, getNodePreviewBounds, type Bounds } from './nodeBounds'
+import {
+  boundsCentroid,
+  getNodePreviewBounds,
+  identityMatrix,
+  multiplyMatrices,
+  nodeMatrix,
+  type Bounds,
+  type Matrix,
+} from './nodeBounds'
 
 export interface ComputedJob extends Job {
   /** Union bounds of the job's leaves in artboard mm. */
@@ -13,6 +21,11 @@ export interface ComputedJob extends Job {
   isBigSpanner: boolean
   /** `true` when the partition came from `manualJobs`; `false` when auto-derived. */
   fromManualOverride: boolean
+  /** Populated when the align-anchors pass snapped this job onto a shared
+   *  horizon line with at least one neighbor. Used by the Prepare view to draw
+   *  horizon guides and by the bridge to send an explicit anchor override to
+   *  Rust so the gcode zero matches the pencil cross. */
+  anchorAlignment?: { sharedX?: number; sharedY?: number }
 }
 
 const JOB_ID_PREFIX = 'job'
@@ -408,6 +421,28 @@ function reorderLeavesByAnchor(
   return ordered
 }
 
+/** Compose the transform matrix from the root down to — but not including —
+ *  `node`, so bounds can be reported in artboard coordinate space rather than
+ *  the leaf's local space. Without this, SVG-imported leaves sit at identity
+ *  locally while their containing `<svg>` group carries the import scale and
+ *  origin-flip, producing bounds hundreds of mm off from where the art actually
+ *  renders. */
+function ancestorMatrix(
+  node: CanvasNode,
+  nodesById: Record<string, CanvasNode>,
+): Matrix {
+  const chain: CanvasNode[] = []
+  let cur: CanvasNode | undefined = node.parentId ? nodesById[node.parentId] : undefined
+  while (cur) {
+    chain.push(cur)
+    cur = cur.parentId ? nodesById[cur.parentId] : undefined
+  }
+  chain.reverse()
+  let matrix = identityMatrix()
+  for (const ancestor of chain) matrix = multiplyMatrices(matrix, nodeMatrix(ancestor))
+  return matrix
+}
+
 /** Build per-leaf geometry from the cut order, dropping leaves without bounds
  *  (e.g. invisible nodes) so every partition step has real coordinates. */
 function leavesWithGeometry(
@@ -426,7 +461,7 @@ function leavesWithGeometry(
   for (const leaf of cutOrder.sequence) {
     const node = nodesById[leaf.nodeId]
     if (!node) continue
-    const bounds = getNodePreviewBounds(node, nodesById)
+    const bounds = getNodePreviewBounds(node, nodesById, ancestorMatrix(node, nodesById))
     if (!bounds) continue
     out.push({
       nodeId: leaf.nodeId,
@@ -479,6 +514,88 @@ function autoPartition(
     return Math.min(...a.map((l) => l.cutIndex)) - Math.min(...b.map((l) => l.cutIndex))
   })
   return groups
+}
+
+/** Single-linkage cluster of sorted 1D values. Returns groups of input indices;
+ *  singletons included. Two consecutive sorted values join the same cluster
+ *  when their gap is `<= tolerance`. */
+function cluster1d(values: { value: number; index: number }[], tolerance: number): number[][] {
+  if (values.length === 0) return []
+  const sorted = [...values].sort((a, b) => a.value - b.value)
+  const clusters: number[][] = []
+  let current: typeof sorted = [sorted[0]!]
+  for (let i = 1; i < sorted.length; i += 1) {
+    const entry = sorted[i]!
+    const prev = current[current.length - 1]!
+    if (entry.value - prev.value <= tolerance) {
+      current.push(entry)
+    } else {
+      clusters.push(current.map((e) => e.index))
+      current = [entry]
+    }
+  }
+  clusters.push(current.map((e) => e.index))
+  return clusters
+}
+
+function roundMm(value: number): number {
+  return Math.round(value * 10) / 10
+}
+
+/** Post-pass: for Center-anchored jobs whose anchor x (or y) values fall within
+ *  `toleranceMm` of a neighbor, snap every member of the cluster to the cluster
+ *  mean so they share a horizon line. Jobs with explicit non-Center anchors and
+ *  singleton clusters are left alone. Mutates and returns the same array so
+ *  downstream readers (bridge, UI) see the snapped points. */
+export function alignJobAnchors(
+  jobs: ComputedJob[],
+  toleranceMm: number,
+  artboardHeight: number,
+): ComputedJob[] {
+  if (toleranceMm <= 0 || jobs.length < 2) return jobs
+  const eligible: number[] = []
+  for (let i = 0; i < jobs.length; i += 1) {
+    if (jobs[i]!.pathAnchor === 'Center') eligible.push(i)
+  }
+  if (eligible.length < 2) return jobs
+
+  const snapOnAxis = (axis: 'x' | 'y'): Map<number, number> => {
+    const values = eligible.map((idx) => ({
+      value: jobs[idx]!.anchorPointMm[axis],
+      index: idx,
+    }))
+    const clusters = cluster1d(values, toleranceMm)
+    const snapped = new Map<number, number>()
+    for (const cluster of clusters) {
+      if (cluster.length < 2) continue
+      const sum = cluster.reduce((acc, idx) => acc + jobs[idx]!.anchorPointMm[axis], 0)
+      const snappedValue = roundMm(sum / cluster.length)
+      for (const idx of cluster) snapped.set(idx, snappedValue)
+    }
+    return snapped
+  }
+
+  const xSnaps = snapOnAxis('x')
+  const ySnaps = snapOnAxis('y')
+
+  for (const idx of eligible) {
+    const job = jobs[idx]!
+    const newX = xSnaps.get(idx)
+    const newY = ySnaps.get(idx)
+    if (newX == null && newY == null) continue
+    const resolvedX = newX ?? job.anchorPointMm.x
+    const resolvedY = newY ?? job.anchorPointMm.y
+    job.anchorPointMm = { x: resolvedX, y: resolvedY }
+    job.crossOffsetFromArtboardBL = {
+      x: resolvedX,
+      y: artboardHeight - resolvedY,
+    }
+    const alignment: { sharedX?: number; sharedY?: number } = {}
+    if (newX != null) alignment.sharedX = newX
+    if (newY != null) alignment.sharedY = newY
+    job.anchorAlignment = alignment
+  }
+  return jobs
 }
 
 export interface ComputeJobsResult {
@@ -549,6 +666,9 @@ export function computeJobs(
     (i, nodeIds) => stableJobId(nodeIds, i),
     (nodeIds) => nodeIds.some((id) => bigSpannerNodeIds.has(id)),
   )
+  if (settings.alignJobAnchors) {
+    alignJobAnchors(autoJobs, settings.alignJobAnchorsToleranceMm, artboard.height)
+  }
 
   if (!settings.manualJobs || settings.manualJobs.length === 0) {
     return { jobs: autoJobs, autoJobs }
@@ -582,6 +702,9 @@ export function computeJobs(
       manualJobsByIndex.find((mj) => mj.nodeIds.every((id) => nodeIds.includes(id)))
         ?.forceOwnJob ?? false,
   )
+  if (settings.alignJobAnchors) {
+    alignJobAnchors(manualJobs, settings.alignJobAnchorsToleranceMm, artboard.height)
+  }
 
   return { jobs: manualJobs, autoJobs }
 }
